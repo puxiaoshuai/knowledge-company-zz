@@ -10,6 +10,7 @@ import {
   UploadedFile,
   UseInterceptors,
   BadRequestException,
+  Put,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { DocumentService } from './document.service';
@@ -68,5 +69,12 @@ export class DocumentController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.documentService.remove(id);
+  }
+
+
+  /** 直接发布文档（无审核；发布后 MQ 异步触发 RAG / KG / ES） */
+  @Put(':id/publish')
+  publish(@Param('id') id: string) {
+    return this.documentService.publish(id);
   }
 }

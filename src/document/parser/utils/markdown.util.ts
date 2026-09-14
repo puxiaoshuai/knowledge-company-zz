@@ -1,3 +1,5 @@
+import { decodeTextBuffer } from './encoding.util.js';
+
 /** 规范化 Markdown：统一换行，压缩连续空行，去首尾空白 */
 export function cleanMarkdown(text: string): string {
   if (!text) return '';
@@ -44,12 +46,13 @@ export function getExtension(filename?: string | null): string {
 
 /**
  * Multer/busboy 常把 multipart 文件名的 UTF-8 字节按 Latin-1 解码，
- * 导致中文变成「ç³è®º…」。按 Latin-1 取回原始字节再按 UTF-8 还原。
+ * 导致中文变成「ç³è®º…」。按 Latin-1 取回原始字节，再推断编码还原（UTF-8 / GB18030）。
  */
 export function decodeUploadFilename(filename?: string | null): string {
   if (!filename) return '';
   try {
-    const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+    const raw = Buffer.from(filename, 'latin1');
+    const decoded = decodeTextBuffer(raw);
     // 解码失败会出现替换字符，此时保留原值
     if (decoded.includes('\uFFFD')) return filename;
     return decoded;

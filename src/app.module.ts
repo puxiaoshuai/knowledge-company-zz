@@ -5,6 +5,7 @@ import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { DocumentModule } from './document/document.module.js';
+import { MqModule } from './mq/mq.module.js';
 import { StorageModule } from './storage/storage.module.js';
 
 @Module({
@@ -43,6 +44,9 @@ import { StorageModule } from './storage/storage.module.js';
 
     // RustFS 文件存储（@Global，注册一次即可全局注入）
     StorageModule,
+
+    // RabbitMQ 异步管线：发布后 RAG 索引（@Global，注册一次即可全局注入）
+    MqModule,
 
     DocumentModule,
   ],

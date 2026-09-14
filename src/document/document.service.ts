@@ -9,10 +9,11 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { EntityManager } from 'typeorm';
 import { nextSnowflakeId } from '../common/snowflake-id';
+import { newTraceId } from '../common/trace-id';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
 import { QueryDocumentDto } from './dto/query-document.dto';
-import { UploadParseDto } from './dto/upload-parse.dto.js';
+import { UploadParseDto } from './dto/upload-parse.dto';
 import {
   DocumentEntity,
   DocumentStatus,
@@ -28,6 +29,7 @@ import {
   getExtension,
   titleFromFilename,
 } from './parser/utils/markdown.util';
+import { DocumentPipelinePublisher } from '../mq/document-pipeline.publisher';
 
 /**
  * 文档服务
@@ -48,6 +50,7 @@ export class DocumentService {
     private readonly contentModel: Model<DocumentContentDocument>,
     private readonly fileParserService: FileParserService,
     private readonly rustfs: RustfsService,
+     private readonly pipelinePublisher: DocumentPipelinePublisher,
   ) {}
 
   /**
@@ -399,4 +402,97 @@ export class DocumentService {
 
     return cjk + latin;
   }
+
+
+  /**
+   * 直接发布文档（不做审核）
+   *
+   * 流程：
+   * 1. 校验文档存在且状态为草稿 / 已发布
+   * 2. 写库：status=Published，刷新 publishTime
+   * 3. 读 Mongo 正文，投递 RabbitMQ（RAG 向量化）
+   * 4. 投递失败只打日志，不回滚「已发布」状态
+   *
+   * 异步消费侧见 DocumentPipelineConsumer → PipelineOrchestrator：
+   * 分块(ChunkingService) → 嵌入 → ES(kh_chunk)
+   *
+   * 全链路日志带同一个 traceId，grep 即可还原本次发布的完整路径。
+   */
+  async publish(id: string) {
+    const traceId = newTraceId();
+    const startedAt = Date.now();
+
+    this.logger.log(
+      `[发布] step=1/6 traceId=${traceId} docId=${id} 开始发布`,
+    );
+    const doc = await this.em.findOne(DocumentEntity, {
+      where: { id, deleted: false },
+    });
+    if (!doc) {
+      this.logger.warn(
+        `[发布] step=1/6 traceId=${traceId} docId=${id} 文档不存在或已删除`,
+      );
+      throw new NotFoundException(`Document ${id} not found`);
+    }
+
+    // 仅草稿 / 已发布可发布（已发布再次发布会重建索引）
+    if (
+      doc.status !== DocumentStatus.Draft &&
+      doc.status !== DocumentStatus.Published
+    ) {
+      this.logger.warn(
+        `[发布] step=2/6 traceId=${traceId} docId=${id} ` +
+          `状态不允许发布 status=${doc.status}(${DocumentStatus[doc.status]})`,
+      );
+      throw new BadRequestException('当前文档状态不允许发布');
+    }
+
+    const previousStatus = doc.status;
+    this.logger.log(
+      `[发布] step=2/6 traceId=${traceId} docId=${id} ` +
+        `状态校验通过 status=${previousStatus}(${DocumentStatus[previousStatus]})` +
+        `→${DocumentStatus.Published}(Published)`,
+    );
+
+    doc.status = DocumentStatus.Published;
+    doc.publishTime = new Date();
+    const saved = await this.em.save(doc);
+    this.logger.log(
+      `[发布] step=3/6 traceId=${traceId} docId=${id} ` +
+        `元数据已落库 contentId=${saved.contentId} publishTime=${this.toIso(saved.publishTime)}`,
+    );
+
+    const contentDoc = await this.contentModel
+      .findOne({ _id: doc.contentId, deleted: false })
+      .lean();
+    const content = contentDoc?.content ?? null;
+    this.logger.log(
+      `[发布] step=4/6 traceId=${traceId} docId=${id} ` +
+        `正文已加载 chars=${content?.length ?? 0}` +
+        (content?.trim() ? '' : '（正文为空，RAG 将跳过索引）'),
+    );
+
+    // MQ 失败不影响发布成功；step=5/6 由 Publisher 打出（它才知道投递结果）
+    try {
+      await this.pipelinePublisher.afterPublish(saved, traceId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `[发布] step=5/6 traceId=${traceId} docId=${id} ` +
+          `MQ 投递异常（不影响发布状态）error=${message}`,
+      );
+    }
+
+    const elapsed = Date.now() - startedAt;
+    this.logger.log(
+      `[发布] step=6/6 traceId=${traceId} docId=${id} 发布完成 总耗时=${elapsed}ms`,
+    );
+    return { ...saved, content: content ?? '' };
+  }
+
+  /** Date → ISO-8601（仅用于日志展示） */
+  private toIso(value?: Date | null): string {
+    return value instanceof Date ? value.toISOString() : 'null';
+  }
+
 }
