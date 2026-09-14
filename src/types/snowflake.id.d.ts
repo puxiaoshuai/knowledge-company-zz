@@ -6,18 +6,20 @@ declare module 'snowflake-id' {
     offset?: number;
   }
 
-  class SnowflakeId {
+  /**
+   * 包产物是 Babel 编译的 CJS，带 `__esModule: true`，类挂在 `exports.default` 上。
+   *
+   * 在 esModuleInterop 下这恰好等价于「默认导出就是 SnowflakeId」：
+   * `import SnowflakeId from 'snowflake-id'` 会编译成
+   * `__importDefault(require(...)).default`，而 `__importDefault` 见
+   * `__esModule` 为 true 会原样返回 module.exports，再取 `.default` 正好拿到类本身。
+   *
+   * 注意不要再写 `.default.default`：那是 undefined，`new` 会报
+   * "SnowflakeId is not a constructor"。
+   */
+  export default class SnowflakeId {
     constructor(options?: SnowflakeIdOptions);
     /** 生成雪花 ID 字符串（JS number 无法安全表示 64 位整数） */
     generate(): string;
   }
-
-  /**
-   * 该包是 Babel 编译的 CJS 产物，实际导出 `exports.default = SnowflakeId`
-   * （且带 `__esModule: true`）。在 "type": "module" 下 Node 会把整个
-   * module.exports 当作 default 导出，所以必须经 `.default` 取值，
-   * 否则拿到的是命名空间对象，`new` 会报 "not a constructor"。
-   */
-  const _exports: { default: typeof SnowflakeId };
-  export = _exports;
 }

@@ -1,13 +1,14 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { DocumentService } from './document.service.js';
-import { DocumentController } from './document.controller.js';
-import { DocumentEntity } from './entities/document.entity.js';
+import { DocumentService } from './document.service';
+import { DocumentController } from './document.controller';
 import {
   DocumentContent,
   DocumentContentSchema,
-} from './schemas/document-content.schema.js';
+} from './schemas/document-content.schema';
+import { FileParserService } from './parser/file-parser.service';
+import { DocumentEntity } from './entities/document.entity';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import {
     ]),
   ],
   controllers: [DocumentController],
-  providers: [DocumentService],
-  exports: [DocumentService],
+  providers: [DocumentService, FileParserService],
+  exports: [DocumentService, FileParserService],
 })
 export class DocumentModule {}

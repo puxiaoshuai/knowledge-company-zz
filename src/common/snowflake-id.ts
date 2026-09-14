@@ -1,8 +1,4 @@
-import snowflakeIdModule from 'snowflake-id';
-
-// 该包是 CJS 产物，真正的类是 exports.default；ESM 互操作下 default 指向整个
-// module.exports，直接 new 会报 "not a constructor"，所以这里显式取一次 .default。
-const SnowflakeId = snowflakeIdModule.default;
+import SnowflakeId from 'snowflake-id';
 
 const snowflake = new SnowflakeId({
   mid: Number(process.env.SNOWFLAKE_WORKER_ID ?? 1),

@@ -5,6 +5,7 @@ import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { DocumentModule } from './document/document.module.js';
+import { StorageModule } from './storage/storage.module.js';
 
 @Module({
   imports: [
@@ -39,6 +40,9 @@ import { DocumentModule } from './document/document.module.js';
         ),
       }),
     }),
+
+    // RustFS 文件存储（@Global，注册一次即可全局注入）
+    StorageModule,
 
     DocumentModule,
   ],
