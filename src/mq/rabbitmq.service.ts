@@ -14,6 +14,11 @@ import {
   RAG_REINDEX_EXCHANGE,
   RAG_REINDEX_QUEUE,
   RAG_RK_BY_IDS,
+  RAG_RK_DELETE,
+  SEARCH_INDEX_EXCHANGE,
+  SEARCH_INDEX_QUEUE,
+  SEARCH_RK_DELETE,
+  SEARCH_RK_INDEX,
 } from './mq.constants';
 
 export type MessageHandler = (msg: ConsumeMessage) => Promise<void> | void;
@@ -130,9 +135,6 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
   /** 注册队列消费者（在模块 init 前/后均可；连接就绪后生效） */
   registerHandler(queue: string, handler: MessageHandler) {
     this.handlers.set(queue, handler);
-    this.logger.log(
-      `[MQ] step=1/3 注册消费者 handler queue=${queue}（待连接就绪后绑定）`,
-    );
   }
 
   async publish(
@@ -166,11 +168,22 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
     await ch.assertExchange(RAG_REINDEX_EXCHANGE, 'topic', { durable: true });
     await ch.assertQueue(RAG_REINDEX_QUEUE, { durable: true });
     await ch.bindQueue(RAG_REINDEX_QUEUE, RAG_REINDEX_EXCHANGE, RAG_RK_BY_IDS);
+    await ch.bindQueue(RAG_REINDEX_QUEUE, RAG_REINDEX_EXCHANGE, RAG_RK_DELETE);
 
-    this.logger.log(
-      `[MQ] step=2/3 拓扑已声明 exchange=${RAG_REINDEX_EXCHANGE}(topic,durable) ` +
-        `queue=${RAG_REINDEX_QUEUE}(durable) rk=${RAG_RK_BY_IDS}`,
+    await ch.assertExchange(SEARCH_INDEX_EXCHANGE, 'topic', { durable: true });
+    await ch.assertQueue(SEARCH_INDEX_QUEUE, { durable: true });
+    await ch.bindQueue(
+      SEARCH_INDEX_QUEUE,
+      SEARCH_INDEX_EXCHANGE,
+      SEARCH_RK_INDEX,
     );
+    await ch.bindQueue(
+      SEARCH_INDEX_QUEUE,
+      SEARCH_INDEX_EXCHANGE,
+      SEARCH_RK_DELETE,
+    );
+
+    this.logger.log('RabbitMQ 拓扑已声明（RAG + Search）');
   }
 
   private async bindConsumers(ch: ConfirmChannel) {
@@ -183,30 +196,11 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
-          // 注意 requeue=false：失败消息直接丢弃，无死信兜底
-          this.logger.error(
-            `消费失败 queue=${queue} requeue=false ` +
-              `traceId=${this.peekTraceId(msg)}: ${message}`,
-          );
+          this.logger.error(`消费失败 queue=${queue}: ${message}`);
           ch.nack(msg, false, false);
         }
       });
-      this.logger.log(`[MQ] step=3/3 消费者已绑定 queue=${queue}`);
-    }
-  }
-
-  /**
-   * 从消息体里尽力取出 traceId，用于把消费失败关联回发布链路。
-   * 解析失败（非 JSON / 字段缺失）时返回 '-'
-   */
-  private peekTraceId(msg: ConsumeMessage): string {
-    try {
-      const parsed = JSON.parse(msg.content.toString('utf8')) as {
-        traceId?: unknown;
-      };
-      return typeof parsed?.traceId === 'string' ? parsed.traceId : '-';
-    } catch {
-      return '-';
+      this.logger.log(`已注册消费者：${queue}`);
     }
   }
 }

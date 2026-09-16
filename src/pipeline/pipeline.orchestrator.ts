@@ -10,6 +10,7 @@ import {
 } from '../document/schemas/document-content.schema';
 import { ChunkingService } from './chunking.service';
 import { EmbeddingService } from './embedding.service';
+import { SearchIndexService } from './search-index.service';
 import { VectorIndexService } from './vector-index.service';
 import { PipelineDocument } from './types/pipeline.types';
 
@@ -17,6 +18,7 @@ import { PipelineDocument } from './types/pipeline.types';
  * 发布后知识管线编排器
  *
  * <p>RAG：分块 → Embedding → ES kh_chunk</p>
+ * <p>Search：整篇快照 → ES kh_document</p>
  *
  * <p>由 {@link DocumentPipelineConsumer} 在消费到 MQ 消息后调用；</p>
  * <p>本类负责「加载文档 → 调具体服务」，不直接碰 RabbitMQ。</p>
@@ -33,78 +35,79 @@ export class PipelineOrchestrator {
     private readonly chunkingService: ChunkingService,
     private readonly embeddingService: EmbeddingService,
     private readonly vectorIndexService: VectorIndexService,
+    private readonly searchIndexService: SearchIndexService,
   ) {}
 
   /**
-   * 处理 RAG 重建消息。
+   * 处理 RAG 重建 / 删除消息。
    *
    * 重建流水线（单文档）：清旧块 → Chunking → Embedding → 写入 ES kh_chunk
-   *
-   * @param traceId 发布入口生成的链路追踪 ID，透传到每条步骤日志
    */
-  async handleRagReindex(
-    type: string,
-    documentIds: string[] | undefined,
-    traceId: string,
-  ) {
+  async handleRagReindex(type: string, documentIds?: string[]) {
+    if (type === 'DELETE_BY_DOC_IDS' && documentIds?.length) {
+      for (const id of documentIds) {
+        await this.vectorIndexService.deleteByDocId(id);
+      }
+      return;
+    }
+
     if (type !== 'BY_DOC_IDS' || !documentIds?.length) {
-      this.logger.warn(
-        `[RAG] step=1/5 traceId=${traceId} 忽略未支持的消息 type=${type}`,
-      );
+      this.logger.warn(`忽略未支持的 RAG 消息：type=${type}`);
       return;
     }
 
     const docs = await this.loadDocumentsByIds(documentIds);
-    const startedAt = Date.now();
-    this.logger.log(
-      `[RAG] traceId=${traceId} 已加载文档 total=${docs.length} ` +
-        `documentIds=${JSON.stringify(documentIds)}`,
-    );
+    this.logger.log(`RAG 开始索引：type=${type}, total=${docs.length}`);
 
-    for (let i = 0; i < docs.length; i++) {
-      const doc = docs[i];
+    for (const doc of docs) {
       try {
-        await this.reindexOne(doc, traceId);
+        await this.reindexOne(doc);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.error(
-          `[RAG] 失败 traceId=${traceId} docId=${doc.id} ` +
-            `elapsed=${Date.now() - startedAt}ms error=${message}`,
-        );
+        this.logger.error(`RAG 索引失败：documentId=${doc.id}, ${message}`);
       }
-    }
-
-    // 单文档时 reindexOne 已打过逐篇汇总，这里只在多文档时补一条总量概览
-    if (docs.length !== 1) {
-      this.logger.log(
-        `[RAG] 完成 traceId=${traceId} total=${docs.length} ` +
-          `总耗时=${Date.now() - startedAt}ms`,
-      );
     }
   }
 
-  /** 单篇：清旧块 → 分块 → 批量嵌入 → 落库，逐步计时 */
-  private async reindexOne(doc: PipelineDocument, traceId: string) {
-    const t0 = Date.now();
-    const log = (step: string, detail: string) =>
-      this.logger.log(
-        `[RAG] step=${step} traceId=${traceId} docId=${doc.id} ${detail}`,
-      );
-
-    if (!doc.content?.trim()) {
-      this.logger.warn(
-        `[RAG] step=2/5 traceId=${traceId} docId=${doc.id} ` +
-          `正文为空，跳过索引（旧块保留）`,
-      );
+  /**
+   * 处理 Search 索引消息。
+   * INDEX：消息内已带文档快照，直接写入 ES kh_document。
+   * DELETE：按 documentId 删除。
+   */
+  async handleSearchIndex(
+    type: string,
+    documentId: string,
+    document?: Record<string, unknown>,
+  ) {
+    if (type === 'DELETE') {
+      await this.searchIndexService.deleteDocument(documentId);
       return;
     }
 
-    // ① 先清旧块，避免重复发布时脏数据残留
-    await this.vectorIndexService.deleteByDocId(doc.id);
-    log('2/5', `清旧块完成 elapsed=${Date.now() - t0}ms`);
+    if (type === 'INDEX') {
+      if (!document) {
+        this.logger.warn(
+          `Search INDEX 消息缺少 document 快照：documentId=${documentId}`,
+        );
+        return;
+      }
+      await this.searchIndexService.indexDocument(document);
+      return;
+    }
 
-    // ② 分块
-    const tChunk = Date.now();
+    this.logger.warn(`忽略未支持的 Search 消息：type=${type}`);
+  }
+
+  /** 单篇：分块 → 批量嵌入 → 落库 */
+  private async reindexOne(doc: PipelineDocument) {
+    if (!doc.content?.trim()) {
+      this.logger.warn(`文档内容为空，跳过 RAG：documentId=${doc.id}`);
+      return;
+    }
+
+    // 先清旧块，避免重复发布时脏数据残留
+    await this.vectorIndexService.deleteByDocId(doc.id);
+
     const chunks = await this.chunkingService.chunk({
       content: doc.content,
       documentId: doc.id,
@@ -115,44 +118,19 @@ export class PipelineOrchestrator {
       docStatus: doc.status,
       publishTime: this.toIsoDate(doc.publishTime),
     });
-    log(
-      '3/5',
-      `分块完成 chunks=${chunks.length} elapsed=${Date.now() - tChunk}ms`,
-    );
 
-    if (!chunks.length) {
-      this.logger.warn(
-        `[RAG] 完成 traceId=${traceId} docId=${doc.id} ` +
-          `分块为空(0 块) 总耗时=${Date.now() - t0}ms`,
-      );
-      return;
-    }
+    if (!chunks.length) return;
 
-    // ③ 批量嵌入
-    const tEmbed = Date.now();
     const embeddings = await this.embeddingService.embedBatch(
       chunks.map((c) => c.content),
     );
     for (let i = 0; i < chunks.length; i++) {
       chunks[i].embedding = embeddings[i];
     }
-    log(
-      '4/5',
-      `嵌入完成 count=${embeddings.length} dims=${embeddings[0]?.length ?? 0} ` +
-        `elapsed=${Date.now() - tEmbed}ms`,
-    );
 
-    // ④ 写入 ES
-    const tIndex = Date.now();
     await this.vectorIndexService.indexChunks(chunks);
-    log(
-      '5/5',
-      `ES 写入完成 indexed=${chunks.length} elapsed=${Date.now() - tIndex}ms`,
-    );
-
     this.logger.log(
-      `[RAG] 完成 traceId=${traceId} docId=${doc.id} ` +
-        `chunks=${chunks.length} 总耗时=${Date.now() - t0}ms`,
+      `RAG 索引完成：documentId=${doc.id}, chunks=${chunks.length}`,
     );
   }
 
