@@ -1,16 +1,11 @@
-/** RAG 重建索引消息 */
+/** RAG 重建 / 删除索引消息 */
 export type ReindexType = 'BY_DOC_IDS' | 'DELETE_BY_DOC_IDS';
+
 export interface ReindexMessage {
   taskId: string;
   type: ReindexType;
   documentIds?: string[];
-  /**
-   * 链路追踪 ID，由发布入口生成并透传到消费端。
-   * 可选：兼容不带该字段的旧消息，消费端会自行兜底生成。
-   */
-  traceId?: string;
 }
-
 
 /** ES 搜索索引消息（文档侧直接投递快照，供 Search 消费者落库） */
 export type SearchIndexType = 'INDEX' | 'DELETE';
@@ -21,4 +16,13 @@ export interface SearchIndexMessage {
   documentId: string;
   /** INDEX 时附带的文档快照；DELETE 时可省略 */
   document?: Record<string, unknown>;
+}
+
+/** KG 建图 / 删图消息 */
+export type KgBuildType = 'BUILD_ALL' | 'BUILD_BY_DOC_IDS' | 'DELETE_BY_DOC_IDS';
+
+export interface KgBuildMessage {
+  taskId: string;
+  type: KgBuildType;
+  documentIds?: string[];
 }

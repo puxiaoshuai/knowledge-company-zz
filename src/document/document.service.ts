@@ -474,7 +474,7 @@ export class DocumentService {
 
     // MQ 失败不影响发布成功；step=5/6 由 Publisher 打出（它才知道投递结果）
     try {
-      await this.pipelinePublisher.afterPublish(saved, traceId, content ?? '');
+      await this.pipelinePublisher.afterPublish(saved, content ?? '');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
