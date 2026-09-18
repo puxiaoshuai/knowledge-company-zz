@@ -1,53 +1,44 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { MongooseModule } from '@nestjs/mongoose';
-import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
-import { DocumentModule } from './document/document.module.js';
-import { MqModule } from './mq/mq.module.js';
-import { StorageModule } from './storage/storage.module.js';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { DocumentModule } from './document/document.module';
+import { DocumentEntity } from './document/entities/document.entity';
+import { DocumentReviewEntity } from './document/entities/document-review.entity';
+import { MqModule } from './mq/mq.module';
+import { PipelineModule } from './pipeline/pipeline.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-
-    // PostgreSQL：关系型数据（用户、权限、文档元数据等）
+    PipelineModule,
+    MqModule,
+    StorageModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService): TypeOrmModuleOptions => ({
-        type: 'postgres',
-        host: config.get('POSTGRES_HOST', 'localhost'),
-        port: Number(config.get('POSTGRES_PORT', 5432)),
-        username: config.get('POSTGRES_USER', 'user'),
-        password: config.get('POSTGRES_PASSWORD', '123456'),
-        database: config.get('POSTGRES_DB', 'knowledge_hub'),
-        // 实体通过 TypeOrmModule.forFeature() 注册，这里自动收集，无需手写 entities 列表
-        autoLoadEntities: true,
-        // 生产环境必须走 migration，禁止自动改表结构
-        synchronize: config.get('DB_SYNCHRONIZE', config.get('NODE_ENV') !== 'production'),
-        logging: config.get('NODE_ENV') === 'production' ? ['error'] : ['error', 'warn'],
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres' as const,
+        host: config.get<string>('POSTGRES_HOST', 'localhost'),
+        port: config.get<number>('POSTGRES_PORT', 5432),
+        username: config.get<string>('POSTGRES_USER', 'user'),
+        password: config.get<string>('POSTGRES_PASSWORD', '123456'),
+        database: config.get<string>('POSTGRES_DB', 'knowledge_hub'),
+        entities: [DocumentEntity, DocumentReviewEntity],
+        synchronize: false,
       }),
     }),
-
-    // MongoDB：非结构化数据（文档原文、切片、对话记录等）
-    // 注意 authSource=admin，docker-compose 里的 root 账号建在 admin 库上
     MongooseModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        uri: config.get(
-          'MONGODB_URI',
+        uri: config.get<string>(
+          'MONGO_URI',
           'mongodb://mongo_user:mongo_pass123@localhost:27017/knowledge_hub?authSource=admin',
         ),
       }),
     }),
-
-    // RustFS 文件存储（@Global，注册一次即可全局注入）
-    StorageModule,
-
-    // RabbitMQ 异步管线：发布后 RAG 索引（@Global，注册一次即可全局注入）
-    MqModule,
-
     DocumentModule,
   ],
   controllers: [AppController],

@@ -1,23 +1,23 @@
 services:
   # PostgreSQL
   postgres:
-    image: pgvector/pgvector:pg16
-    container_name: knowledge_hub_postgres
-    restart: always
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: 123456
-      POSTGRES_DB: knowledge_hub
-    ports:
-      - '5432:5432'
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
-      - ./init-scripts/postgresql:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U user -d knowledge_hub']
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      image: pgvector/pgvector:pg16
+      container_name: knowledge_hub_postgres
+      restart: always
+      environment:
+        POSTGRES_USER: user
+        POSTGRES_PASSWORD: 123456
+        POSTGRES_DB: knowledge_hub
+      ports:
+        - "5432:5432"
+      volumes:
+        - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
+        - ./init-scripts/postgresql:/docker-entrypoint-initdb.d
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U user -d hello_pg"]
+        interval: 5s
+        timeout: 5s
+        retries: 5
 
   # PostgreSQL GUI (pgAdmin)
   pgadmin:
@@ -29,12 +29,13 @@ services:
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/pgadmin:/var/lib/pgadmin
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:80/login']
+      # 镜像内无 curl，用 wget 探活
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/login"]
       interval: 30s
       timeout: 20s
       retries: 3
     ports:
-      - '8088:80'
+      - "8088:80"
     depends_on:
       - postgres
 
@@ -48,24 +49,12 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: mongo_pass123
       MONGO_INITDB_DATABASE: knowledge_hub
     ports:
-      - '27017:27017'
+      - "27017:27017"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/mongo:/data/db
       - ./init-scripts/mongodb:/docker-entrypoint-initdb.d
     healthcheck:
-      test:
-        [
-          'CMD',
-          'mongosh',
-          '--eval',
-          "db.adminCommand('ping')",
-          '-u',
-          'mongo_user',
-          '-p',
-          'mongo_pass123',
-          '--authenticationDatabase',
-          'admin',
-        ]
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "-u", "mongo_user", "-p", "mongo_pass123", "--authenticationDatabase", "admin"]
       interval: 10s
       timeout: 10s
       retries: 5
@@ -76,25 +65,25 @@ services:
     container_name: knowledge_hub_mongo_express
     restart: always
     ports:
-      - '8081:8081'
+      - "8081:8081"
     environment:
       # 连接 mongo 数据库账号（和mongodb服务保持一致）
       ME_CONFIG_MONGODB_SERVER: mongodb
       ME_CONFIG_MONGODB_ADMINUSERNAME: mongo_user
       ME_CONFIG_MONGODB_ADMINPASSWORD: mongo_pass123
-      ME_CONFIG_MONGODB_ENABLE_ADMIN: 'true'
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
       # mongo-express 网页登录账号（区分数据库账号）
-      ME_CONFIG_BASICAUTH_ENABLED: 'true'
+      ME_CONFIG_BASICAUTH_ENABLED: "true"
       ME_CONFIG_BASICAUTH_USERNAME: me_admin
       ME_CONFIG_BASICAUTH_PASSWORD: me_123456
       # 编辑器暗色主题
-      ME_CONFIG_OPTIONS_EDITORTHEME: '3024-night'
+      ME_CONFIG_OPTIONS_EDITORTHEME: "3024-night"
     # 等待mongodb健康就绪再启动
     depends_on:
       mongodb:
         condition: service_healthy
 
-# RabbitMQ — 文档发布后异步管线（RAG / KG / ES）
+  # RabbitMQ — 文档发布后异步管线（RAG / KG / ES）
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: knowledge_hub_rabbitmq
@@ -143,7 +132,7 @@ services:
     depends_on:
       - es  # 等待 ES 启动完成后再启动 Kibana
 
- # RustFS（S3 兼容对象存储）— PDF 抽图 / 原文件上传
+  # RustFS（S3 兼容对象存储）— PDF 抽图 / 原文件上传
   # 文档：https://docs.rustfs.com/installation/docker/
   rustfs:
     image: rustfs/rustfs:latest
@@ -151,7 +140,7 @@ services:
     restart: unless-stopped
     ports:
       - "9000:9000" # S3 API
-      - "9011:9001" # Console（宿主机 9001 被荣耀电脑管家 trantorAgent 占用，故映射到 9011）
+      - "9001:9001" # Console
     environment:
       RUSTFS_VOLUMES: /data/rustfs0
       RUSTFS_ADDRESS: 0.0.0.0:9000
@@ -169,6 +158,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 40s
+
   # Neo4j — KG 知识图谱
   neo4j:
     image: neo4j:latest
