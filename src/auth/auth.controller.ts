@@ -3,11 +3,13 @@ import type { Request } from 'express';
 import { AuthService } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { Public } from './decorators/public.decorator.js';
+import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { LogoutDto } from './dto/logout.dto.js';
 import { RefreshTokenDto } from './dto/refresh-token.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { ResendVerificationDto } from './dto/resend-verification.dto.js';
+import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { VerifyEmailDto } from './dto/verify-email.dto.js';
 import type { AuthenticatedUser } from './types/authenticated-user.type.js';
 import type { TokenContext } from './types/token-context.type.js';
@@ -31,11 +33,12 @@ function requestContext(req: Request): TokenContext {
 /**
  * 用户鉴权
  *
- * 注册 / 激活 / 重发 / 登录 / 刷新 / 登出均为 @Public()（此时还没有或不需要有效 access token），
- * profile 走全局 JwtAuthGuard，需要携带 access token。
+ * 注册 / 激活 / 重发 / 找回密码 / 重置密码 / 登录 / 刷新 / 登出均为 @Public()
+ * （此时还没有或不需要有效 access token），profile 走全局 JwtAuthGuard，需要携带 access token。
  *
  * 注意注册**不再签发令牌**：注册后必须点激活邮件里的链接，激活成功才能登录。
- * 「注册 / 激活 / 重发」这三个接口都不返回令牌。
+ * 「注册 / 激活 / 重发 / 找回密码 / 重置密码」这五个接口都不返回令牌；
+ * 重置密码还会反向吊销该用户**全部**已签发的令牌，用户必须重新登录。
  */
 @Controller('auth')
 export class AuthController {
@@ -73,6 +76,36 @@ export class AuthController {
   @Post('resend-verification')
   resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerification(dto.username);
+  }
+
+  /**
+   * 找回密码：向该账号绑定的邮箱发送 6 位数字验证码。
+   *
+   * 响应恒定（不区分账号是否存在 / 已禁用 / 没绑邮箱），否则就成了账号枚举器；
+   * 60 秒冷却 + 每小时 5 次配额内超限返回 429，两者都先于查库执行，
+   * 因此 429 出现的时机本身也不泄漏账号是否存在。
+   *
+   * 邮件里**只有验证码、没有链接** —— 有链接就会重新引入邮件网关预取凭据的问题。
+   */
+  @Public()
+  @Post('forgot-password')
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  /**
+   * 重置密码：校验验证码后改密。
+   *
+   * 成功后该用户**全部**已签发令牌立即失效（吊销 refresh token + 自增 token_version），
+   * 且不返回新令牌 —— 用户需用新密码重新登录一次。
+   *
+   * 所有失败分支（未申请 / 已过期 / 验证码错误 / 试错超限 / 并发抢先）都返回同一句 400，
+   * 前端不要试图从文案里区分原因。
+   */
+  @Public()
+  @Post('reset-password')
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   /** 登录：返回 access + refresh 令牌 */

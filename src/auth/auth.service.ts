@@ -11,10 +11,13 @@ import { EntityManager } from 'typeorm';
 import { nextSnowflakeId } from '../common/snowflake-id.js';
 import { AuthMessage, BCRYPT_ROUNDS } from './constants/auth.constant.js';
 import { RoleCode } from './constants/role.constant.js';
+import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { LogoutDto } from './dto/logout.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { EmailVerificationService } from './email-verification.service.js';
+import { PasswordResetService } from './password-reset.service.js';
 import { RoleEntity } from './entities/role.entity.js';
 import { UserRoleEntity } from './entities/user-role.entity.js';
 import {
@@ -62,7 +65,7 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-/** 注册 / 登录 / 刷新 / 登出 / 当前用户 / 邮箱激活 */
+/** 注册 / 登录 / 刷新 / 登出 / 当前用户 / 邮箱激活 / 找回密码 */
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -72,6 +75,7 @@ export class AuthService {
     private readonly em: EntityManager,
     private readonly tokenService: TokenService,
     private readonly emailVerification: EmailVerificationService,
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   /**
@@ -250,6 +254,16 @@ export class AuthService {
   /** 重发激活邮件。响应恒定，不反映账号是否存在 */
   resendVerification(username: string) {
     return this.emailVerification.resend(username);
+  }
+
+  /** 找回密码：向绑定邮箱发送验证码。响应恒定，不反映账号是否存在 */
+  forgotPassword(dto: ForgotPasswordDto) {
+    return this.passwordReset.sendCode(dto.username);
+  }
+
+  /** 重置密码：校验验证码后改密，并让该用户全部已签发令牌失效 */
+  resetPassword(dto: ResetPasswordDto) {
+    return this.passwordReset.reset(dto.username, dto.code, dto.newPassword);
   }
 
   /**

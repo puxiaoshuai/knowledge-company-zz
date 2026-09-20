@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
+import { PasswordResetService } from './password-reset.service.js';
 import { RolesGuard } from './guards/roles.guard.js';
 import { TokenService } from './token.service.js';
 
@@ -14,6 +15,7 @@ import { TokenService } from './token.service.js';
  * - AuthService：注册 / 登录 / 刷新 / 登出 / 当前用户
  * - TokenService：令牌签发、校验、轮换、吊销
  * - EmailVerificationService：邮箱激活 token 的签发 / 校验 / 重发
+ * - PasswordResetService：找回密码验证码的签发 / 校验（依赖 TokenService 做全量下线）
  *   （依赖的 RedisService / MailService 来自 @Global() 模块，不必在这里 imports）
  *
  * 这里注册的两个 APP_GUARD 是**全局**的，顺序即执行顺序：
@@ -30,6 +32,7 @@ import { TokenService } from './token.service.js';
     AuthService,
     TokenService,
     EmailVerificationService,
+    PasswordResetService,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],

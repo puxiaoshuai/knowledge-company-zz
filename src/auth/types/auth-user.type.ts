@@ -75,3 +75,20 @@ export interface ResendVerificationResult {
   success: true;
   message: string;
 }
+
+/** 找回密码（发送验证码）结果。响应内容恒定，不反映账号是否存在 / 是否绑邮箱 */
+export interface ForgotPasswordResult {
+  success: true;
+  message: string;
+}
+
+/**
+ * 重置密码结果。
+ *
+ * 与 RegisterResult 一样**不含令牌**：改密码会让该用户全部已签发令牌失效
+ * （见 PasswordResetService.reset），所以这里只能返回受理结果，用户需重新登录。
+ */
+export interface ResetPasswordResult {
+  success: true;
+  message: string;
+}

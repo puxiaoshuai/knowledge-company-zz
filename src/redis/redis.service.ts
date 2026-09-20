@@ -171,6 +171,40 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.require().ttl(key);
   }
 
+  /**
+   * 自增计数，返回自增后的值（ioredis 的 INCR 直接返回 number，不必 parse）。
+   *
+   * ⚠️ **INCR 对不存在的 key 会把它创建出来，且不带任何过期时间。**
+   * 这一点和上面的 setIfAbsent 是同一类陷阱：调用方如果没先用 `SET ... EX` 把 key 写出来，
+   * 就会在 Redis 里留下一个**永不过期**的计数器 —— 对「试错次数」这类计数器而言，
+   * 就等于该用户**永久锁死**（此后每次校验都直接判定超限），只能手工 DEL 才能恢复。
+   *
+   * 所以调用方要么保证 key 已由 SET 建立（如密码重置的 attempts key，签发时无条件 SET），
+   * 要么在每次自增前紧跟一次 setIfAbsent 兜底（如 requests key）——
+   * 后者的安全性来自「setIfAbsent 每次都会跑」，key 缺失时必然被补上 TTL。
+   *
+   * 另注意 key 里存的必须是裸整数：`INCR` 遇到 `''` / `'0\n'` 会报
+   * ERR value is not an integer or out of range。
+   */
+  async incr(key: string): Promise<number> {
+    return this.require().incr(key);
+  }
+
+  /**
+   * 原子地取出并删除（GETDEL，Redis 6.2+；docker-compose 跑的是 redis:7-alpine）。
+   *
+   * 用于「一次性凭据」的**占用**：验证码 / 一次性令牌在并发请求下会被两个调用方同时读到，
+   * 若各自只做一次 DEL，两边都会认为自己是赢家（DEL 是幂等的，谁也不会失败）。
+   * GETDEL 把「读」和「删」合成单条原子命令，只有拿到非 null 的那一方能继续 ——
+   * 与 setIfAbsent 注释里的取舍同理：单条原子命令优于两步。
+   *
+   * ⚠️ 别把它当作流程里的**首次读取**：那样一次输错就会连验证码一起吃掉，
+   * 试错次数形同虚设。正确用法是先 get 出一份用于比对，确认无误后再 GETDEL 抢占。
+   */
+  async getDel(key: string): Promise<string | null> {
+    return this.require().getdel(key);
+  }
+
   async ping(): Promise<boolean> {
     try {
       return (await this.require().ping()) === 'PONG';
