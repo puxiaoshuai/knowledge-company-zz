@@ -203,6 +203,31 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 
 **不可改字段**：`username` / `password` 不在 DTO 里声明，传了会被 `forbidNonWhitelisted` 判 400。改密码走 `POST /auth/change-password`。
 
+### 9. 权限管理（RBAC，`/permissions`）
+
+权限是独立于角色的细粒度授权面：`kh_permission` 树（菜单 / 按钮 / 接口三类）→（角色授权 `kh_role_permission`）∪（用户直授 `kh_user_permission`）。管理接口含树 / 分页 / 增删改 / 角色·用户授权的回显与整体替换，另有**仅需登录**的 `GET /permissions/me`，返回当前用户权限码集合 + 菜单树 —— 前端动态菜单与按钮显隐（v-permission）的数据源。
+
+**与角色机制的刻意对比**（两条互补的授权通道）：
+
+| | 角色（`@Roles`） | 权限码（`@RequirePermissions`） |
+| --- | --- | --- |
+| 载体 | 内嵌 JWT 载荷，guard 不重取 | 不进 JWT，每请求实时查库 |
+| 生效 | 变更需吊销令牌（改权限即下线） | **即时生效**，无需吊销 |
+| 多值语义 | any-match（命中任一角色） | **all-match**（权限码须全部满足） |
+| admin | 显式标注 `ROLE_ADMIN` | 隐式全通过（种子刻意不给 admin 落授权记录） |
+
+**运行时校验**：`@RequirePermissions('document:edit')` 装饰器 + 全局 `PermissionsGuard`（第 3 个 APP_GUARD，注册在 permission 模块，执行顺序在 JwtAuthGuard / RolesGuard 之后 —— 模块在 `app.module.ts` 里的顺序即守卫顺序）。有效权限 = **启用中角色**的授权 ∪ 用户直授，且权限本身启用未删 —— 三层过滤少任何一层都会越权（禁用角色仍授权 / 软删权限仍生效）。授权谓词只存在于 `PermissionResolverService` 一处，guard 与 `/permissions/me` 共用，防止「菜单看得见、接口却 403」的两处分叉。
+
+**删除权限会同事务清理两条授权关联表** —— 这是卫生措施而非安全措施（resolver 已过滤软删，不清理也不会越权），只为授权回显不出现树上已不存在的僵尸 id；有未删子权限时拒绝删除。注意 `permission_code` 的唯一索引**不带** `WHERE deleted`，软删后的编码永久不能复用（用户名 / 邮箱的未删除唯一索引没有此问题）。
+
+### 10. 团队管理（`/teams`）
+
+组织树：`kh_team`（`parent_id` 自关联、`leader_id` 指向 kh_user）+ `kh_team_member`（`UNIQUE(team_id, user_id)`，`member_role` = leader / member）。接口：树 / 平铺分页 / 详情 / 增删改 / 成员分页 / 成员整体替换。
+
+**`leader_id` 是权威字段**，与成员表的 leader 标注由 `PUT /teams/:id/members` 的一致性规则保证不矛盾：成员中 leader 标注最多 1 个；团队已有 `leader_id` 且与成员里的 leader 不同 → 400（先 `PATCH /teams/:id` 改负责人）；`leader_id` 为空且成员带 leader → 同事务补写；成员不含 leader → 不动 `leader_id`。建团队 / 改负责人只写指针、**不自动写成员行** —— 成员归属由 PUT members 独占管理，两个入口互不踩脚。
+
+团队是**组织配置而非安全边界**：`kh_document.team_id` 只是归属标记，删团队不清理任何文档（存量文档会残留指向已删团队的 teamId，前端按「团队不存在」兜底）。
+
 ---
 
 ## 当前进度
@@ -222,6 +247,8 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - [x] 找回密码（用户名 + 邮箱验证码重置密码，重置后全量下线旧会话）
 - [x] 已登录凭旧密码改密码（`POST /auth/change-password`，成功后全量下线）
 - [x] 用户管理（管理员：分页查询 / 详情 / 新增 / 修改 / 软删除 + 角色分配，含最后管理员保护）
+- [x] RBAC 权限管理（权限树 / 角色·用户授权 / `GET /permissions/me` 权限码与菜单 + `@RequirePermissions` 全局守卫，实时生效不吊销令牌）
+- [x] 团队管理（团队树 / CRUD + 成员整体替换 + leader 一致性规则）
 - [x] 雪花 ID 生成、BIGINT 序列化转换、traceId 链路日志
 
 ### 🚧 待办
@@ -254,6 +281,11 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - **找回密码同样只有账号级限流**：冷却 / 小时配额都按 `username` 维度，攻击者换着用户名打不受限。另外 `forgot-password` 对「账号不存在」只做一次 Redis 写 + 一次查库，对真实账号还要多等一次 SMTP 往返 —— 响应体恒定但**耗时能区分**（现有的 `resend-verification` 有同样问题）。彻底修复需要引入 IP 维度限流与后台发信队列，本项目当前都没有。
 - **改邮箱接口缺失**：将来做「改邮箱」时必须同时重置 `email_verified = 0` 并删除 `kh:email-verify:user:<id>`，否则 24h 内旧激活链接能把新邮箱直接标记为已验证。
 - `src/app.module.ts` 读的是 `MONGO_URI`，而 `.env` 定义的是 `MONGODB_URI`，两者对不上 —— 实际一直静默使用代码里的硬编码默认值。改 Mongo 连接地址时要注意。
+- **`@RequirePermissions` 每请求一次权限查询**：权限实时查库不缓存（换来即时生效），与 `verifyAccessToken` 的主键查询叠加。权限码门已铺满管理面（`/users` 类级 `system:user`、`/teams` 类级 `system:team`、`/permissions` 类级 `system:permission` + 写接口按钮码覆盖）；业务接口（文档 / 审核）尚未接入权限码。量级上来后可加进程内短 TTL 缓存，代价是收回授权有秒级延迟。
+- **`team_code` 应用层查重存在并发窗口**：库里无唯一约束（刻意不动 DDL），两个并发的同编码 POST 都可能通过预检后同时落库。
+- **软删权限的编码被唯一索引永久占用**：`kh_permission.permission_code` 的唯一索引不带 `WHERE deleted`，删掉的编码不能复用（用户名 / 邮箱的未删除唯一索引没有此问题）。
+- **团队软删后文档残留 `teamId`**：`kh_document.team_id` 无外键、删除团队时也不清理，前端需按「团队已不存在」兜底展示。
+- **`/permissions/me` 菜单树孤儿提升为根**：用户拿到子菜单授权但没拿到父菜单时，子菜单浮到顶层而不是被丢弃；需要严格层级时应保证父菜单随子菜单一起授权。
 - `vitest.config.ts` / `vitest.config.e2e.ts` 是**失效配置**：vitest 既非项目依赖也未安装，实际测试运行器是 jest。`test/app.e2e-spec.ts` 未被 `pnpm test` 覆盖（jest `rootDir` 为 `src`），且 `test:e2e` 指向不存在的 `test/jest-e2e.json`。
 - `src/app.controller.spec.ts` 用 `.js` 后缀导入（`./app.controller.js`），jest 没有配 `moduleNameMapper` 去后缀，**该 spec 当前无法运行**。
 
@@ -408,7 +440,7 @@ curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
 | `GET` | `/auth/profile` | 当前登录用户信息 |
 | `POST` | `/auth/change-password` | 凭当前密码改自己的密码，成功后**全量下线**，需重新登录 |
 
-**用户管理**（全部需要 `ROLE_ADMIN`）
+**用户管理**（全部需要 `ROLE_ADMIN` + 权限码 `system:user`，admin 隐式通过）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -418,6 +450,34 @@ curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
 | `POST` | `/users` | 新增用户（直接指定密码与角色，`email_verified` 置 1 且不发激活邮件） |
 | `PATCH` | `/users/:id` | 修改用户（含启用 / 禁用、分配角色；改邮箱会重置验证状态） |
 | `DELETE` | `/users/:id` | 软删除用户，并立即吊销其全部令牌 |
+
+**权限管理**（除 `GET /permissions/me` 仅需登录外，全部需要 `ROLE_ADMIN` + 权限码 `system:permission`，其中增删改要求按钮码 `system:permission:create/edit/delete`；admin 隐式通过）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/permissions/me` | **仅需登录**：我的权限码集合 + 菜单树（admin 返回全量启用权限） |
+| `GET` | `/permissions/tree` | 全量权限树（含禁用节点，管理端勾选树用） |
+| `GET` | `/permissions` | 平铺分页（名称 / 编码模糊 + 类型 / 状态筛选） |
+| `POST` | `/permissions` | 新增权限（父须存在；编码全库唯一、含软删行） |
+| `PATCH` | `/permissions/:id` | 修改权限（改 `parentId` 防环、改编码查重） |
+| `DELETE` | `/permissions/:id` | 软删除（有子权限 400；同事务清理授权关联） |
+| `GET` | `/permissions/role/:roleId` | 角色已授权的权限 ID 列表（回显） |
+| `PUT` | `/permissions/role/:roleId` | 整体替换角色授权（空数组 = 清空，**即时生效不吊销令牌**） |
+| `GET` | `/permissions/user/:userId` | 用户直授权限 ID 列表（回显） |
+| `PUT` | `/permissions/user/:userId` | 整体替换用户直授（空数组 = 清空，即时生效） |
+
+**团队管理**（全部需要 `ROLE_ADMIN` + 权限码 `system:team`，admin 隐式通过）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/teams/tree` | 全量团队树（含禁用节点） |
+| `GET` | `/teams` | 平铺分页（名称 / 编码模糊 + 状态筛选） |
+| `GET` | `/teams/:id` | 团队详情 |
+| `POST` | `/teams` | 新增团队（负责人须为启用用户；编码应用层查重） |
+| `PATCH` | `/teams/:id` | 修改团队（改 `parentId` 防环、改负责人校验） |
+| `DELETE` | `/teams/:id` | 软删除（有子团队 400；同事务清空成员表） |
+| `GET` | `/teams/:id/members` | 成员分页（join kh_user 带用户信息） |
+| `PUT` | `/teams/:id/members` | 整体替换成员（空数组 = 清空；leader 一致性规则见核心链路 §10） |
 
 **文档**
 
@@ -446,7 +506,7 @@ curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
 | `POST` | `/documents/reviews/tasks/:taskId/approve` | `ADMIN` / `REVIEWER` | 审核通过 |
 | `POST` | `/documents/reviews/tasks/:taskId/reject` | `ADMIN` / `REVIEWER` | 审核驳回 |
 
-**测试账号**（密码均为 `123456`，邮箱已验证，可直接登录）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。
+**测试账号**（密码均为 `123456`，邮箱已验证，可直接登录）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。`user` 的 `GET /permissions/me` 返回受限菜单（种子只授了部分权限），`admin` 返回全量 —— 可用于前端权限联调对照。
 
 ---
 
@@ -482,6 +542,17 @@ src/
 │   └── document.service.ts
 ├── mail/                       # nodemailer + SMTP（未配置时降级为打印链接）
 ├── mq/                         # RabbitMQ 生产者 / 消费者 / 拓扑常量
+├── permission/                 # RBAC 权限（树 / 角色·用户授权 / 运行时校验）
+│   ├── constants/              # 对外文案
+│   ├── dto/                    # 查询 / 新增 / 修改 / 授权入参
+│   ├── entities/               # kh_permission / kh_role_permission / kh_user_permission
+│   ├── guards/                 # PermissionsGuard（第 3 个全局 APP_GUARD）
+│   ├── types/                  # 详情 / 树节点 / 菜单节点
+│   ├── my-permission.controller.ts    # GET /permissions/me（仅需登录，独立控制器）
+│   ├── permission-resolver.service.ts # 「用户持有哪些权限」的唯一判定咽喉
+│   ├── permission.controller.ts       # 类级 @Roles(ROLE_ADMIN)
+│   ├── permission.module.ts
+│   └── permission.service.ts
 ├── pipeline/                   # 发布后知识管线
 │   ├── chunking.service.ts     # 分块
 │   ├── embedding.service.ts    # 向量化
@@ -490,6 +561,14 @@ src/
 │   └── pipeline.orchestrator.ts# 管线编排
 ├── redis/                      # ioredis（激活 token / 频率限制）
 ├── storage/                    # RustFS 对象存储
+├── team/                       # 团队管理（组织树 + 成员，仅管理员）
+│   ├── constants/              # 对外文案
+│   ├── dto/                    # 查询 / 新增 / 修改 / 成员替换入参
+│   ├── entities/               # kh_team / kh_team_member
+│   ├── types/                  # 详情 / 树节点 / 成员视图
+│   ├── team.controller.ts      # 类级 @Roles(ROLE_ADMIN)
+│   ├── team.module.ts
+│   └── team.service.ts         # CRUD + 成员整体替换 + leader 一致性
 ├── user/                       # 用户管理（仅管理员，依赖 auth 模块）
 │   ├── constants/              # 对外文案
 │   ├── dto/                    # 列表查询 / 新增 / 修改入参
@@ -516,3 +595,4 @@ src/
 - **改权限即下线**：角色 / 状态 / 邮箱验证状态的变更一律吊销该用户全部令牌（`TokenService.revokeAllForUser`，含 `token_version` 自增）。角色内嵌在 JWT 载荷里而 guard 不重取，不吊销就等于「改了最长 2h 才生效」。宁可让用户重新登录
 - **保护最后的管理员**：删除 / 禁用 / 从最后一个启用中管理员身上摘掉 `ROLE_ADMIN` 前必须确认还有别人兜底，同时禁止删除 / 禁用 / 置为未验证自己 —— 否则系统会永久失去管理能力，只能改库恢复
 - **写 UserEntity 只用 `em.update`**：`save(entity)` 会把读出来时的 `tokenVersion` 一并回写，覆盖掉期间自增的值，等于把刚吊销的令牌全部复活
+- **权限不进 JWT（与角色相反）**：`@RequirePermissions` 的授权面每请求实时查库（角色权限 ∪ 用户直授，谓词只在 `PermissionResolverService` 一处），因此改授权**即时生效、不吊销令牌**；多权限码为 AND 语义；`ROLE_ADMIN` 对权限码隐式全通过

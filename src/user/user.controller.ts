@@ -9,6 +9,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
+import { RequirePermissions } from '../auth/decorators/require-permissions.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RoleCode } from '../auth/constants/role.constant.js';
 import type { AuthenticatedUser } from '../auth/types/authenticated-user.type.js';
@@ -24,10 +25,15 @@ import { UserService } from './user.service.js';
  * 本控制器的每一条路由都只该给管理员，类级标注让「新加一个方法忘记加装饰器」
  * 这个失误从「默认放行」变成「默认拒绝」。
  *
+ * 再叠一道类级权限码门 `@RequirePermissions('system:user')`（种子里的
+ * 「用户管理」菜单码），全路由继承；对 ROLE_ADMIN 隐式全通过，
+ * 当前不改变任何行为，作用是把权限码机制铺到整个管理面。
+ *
  * 「当前是谁」一律取自 JWT（@CurrentUser），不从请求体读 ——
  * 删除自己、禁用自己这类判定全靠它。
  */
 @Roles(RoleCode.Admin)
+@RequirePermissions('system:user')
 @Controller('users')
 export class UserController {
   constructor(private readonly userService: UserService) {}
