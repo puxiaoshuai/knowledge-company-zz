@@ -12,8 +12,10 @@ import { UserEntity } from './auth/entities/user.entity';
 import { DocumentModule } from './document/document.module';
 import { DocumentEntity } from './document/entities/document.entity';
 import { DocumentReviewEntity } from './document/entities/document-review.entity';
+import { MailModule } from './mail/mail.module';
 import { MqModule } from './mq/mq.module';
 import { PipelineModule } from './pipeline/pipeline.module';
+import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
 
 @Module({
@@ -22,6 +24,9 @@ import { StorageModule } from './storage/storage.module';
     PipelineModule,
     MqModule,
     StorageModule,
+    // @Global() 只免除「别的模块 import 你」，本模块仍必须在这里列出才会被实例化
+    RedisModule,
+    MailModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

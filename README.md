@@ -68,6 +68,9 @@
 | RustFS | 上传原文件、PDF 抽取的图片 | 返回可访问 URL 存于文档字段 |
 | ES `kh_document` | 文档级全文检索索引 | `_id` = 文档 ID |
 | ES `kh_chunk` | 分块级向量索引（dense_vector, cosine） | `_id` = chunkId，字段 `document_id` |
+| Redis `kh:email-verify:*` | 邮箱激活 token（哈希）、重发冷却 | key 里带 `userId` / `tokenHash`；**短时状态，丢了重新发一封邮件即可** |
+
+> 刷新令牌**故意不搬进 Redis**：它要能列出会话、按用户批量吊销、追溯轮换链，且必须比缓存活得久 —— 一次 `FLUSH` 就等于全员掉线。Redis 只放「短时、一次性、丢了可重建」的东西。
 
 ---
 
@@ -124,6 +127,27 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 
 > **禁用后重新启用，旧令牌会复活**：禁用只比对 `status`、不动版本号，所以 `status` 改回 `1` 之后原先那枚 access token 又可用。若要求「重新启用必须重新登录」（如离职复职），禁用时连同自增：`UPDATE kh_user SET status = 0, token_version = token_version + 1 WHERE id = ?`。
 
+### 5. 邮箱激活（`/auth`）
+
+注册**不再等价于登录**：`POST /auth/register` 建号（`email_verified = 0`）后发一封激活邮件，**不返回任何令牌**。用户点邮件里的链接打到 `GET /auth/verify-email?token=...`，置 `email_verified = 1` 之后才能登录；未激活时登录返回 **403**（不是 401 —— 凭据是对的，只是身份还没被确认）。
+
+激活 token 存在 **Redis**（`kh:email-verify:*`），32 字节随机数转 base64url，**只存 SHA-256 哈希**（与刷新令牌同一约定），默认 24h。选 Redis 而不是落库或 JWT，是因为它需要「可作废、能被重发覆盖、能限流、到时自动消失」。
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /auth/register` | 建号并发激活邮件。**Redis 不可用直接 503 且不建号** |
+| `GET /auth/verify-email` | 激活。**幂等**，重复点击返回 `alreadyVerified: true` 而非报错 |
+| `POST /auth/resend-verification` | 重发。60 秒冷却，响应恒定 |
+
+**几个刻意的取舍：**
+
+- **激活链接不是一次性的**。Gmail / 企业邮件网关会**预取**邮件里的链接，用掉即失效会让机器人在用户点击前消费掉 token。而本 token 的唯一能力是「把某账号标记为已验证」——幂等、不可逆、不能登录 / 改邮箱 / 解绑，重放它没有后果，所以保留到 TTL 到期更健壮。
+- **重发会让旧链接立即失效**（同一用户只保留一个有效 token）。
+- **重发响应恒定**、冷却先于查库执行：否则这个公开接口就成了「某用户名是否存在 / 是否已激活」的枚举器。
+- **降级策略与其它依赖相反**：Redis 不可用时注册 / 激活 / 重发返回 503（宁可失败也不建僵尸号），而**登录、刷新、文档全链路完全不依赖 Redis，照常工作**。邮件则永不抛错 —— SMTP 没配或发送失败时把激活链接打到日志（搜 `EMAIL_VERIFY_LINK`），注册不该因为一封发不出去的邮件而失败。
+
+> ⚠️ 激活 token 只存哈希、不可逆，**没法从 Redis 反查回链接**。所以「SMTP 未配置时打印链接」不是便利功能，而是调试期唯一的链接来源。
+
 ---
 
 ## 当前进度
@@ -139,6 +163,7 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - [x] 文档快照 → ES `kh_document` 全文索引（**仅写入侧**）
 - [x] 删除 / 下架时同步清理两侧 ES 索引
 - [x] 用户 / 鉴权 / 权限体系（JWT 双令牌 + 全局默认拒绝守卫 + `@Roles` 角色校验 + `token_version` 即时失效）
+- [x] 邮箱激活（注册后发激活邮件，Redis 存 token，未激活禁止登录，支持重发与限流）
 - [x] 雪花 ID 生成、BIGINT 序列化转换、traceId 链路日志
 
 ### 🚧 待办
@@ -149,7 +174,9 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - [ ] RAG 问答链路（召回 + LLM 生成 + 引用溯源）
 - [ ] 文档级权限：已登录用户目前可改任意文档，尚无「只能改自己的」归属校验
 - [ ] 用户管理接口（改密 / 禁用 / 分配角色），当前只能直接改库
+- [ ] 找回密码 / 改密码（Redis 已就位，可复用激活邮件那套 token + 限流）
 - [ ] `kh_refresh_token` 过期行清理任务
+- [ ] 未激活账号清理任务（`email_verified = 0` 且长期未激活的会一直堆积）
 - [ ] 单元测试与 e2e 测试（当前仅脚手架自带的 1 个 spec）
 
 ### ⚠️ 已知缺口
@@ -159,6 +186,9 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - 向量块同样**只写不读**，尚无 kNN 检索入口。
 - **角色变更最长 2h 生效**：角色内嵌在 JWT 载荷里，guard 只比对账号状态与令牌版本号、**不重取角色**；用户刷新令牌时会重新取最新角色，可提前生效。要即时生效得把角色移出 JWT 或单独做版本号。
 - **guard 每请求多一次主键查询**：`verifyAccessToken` 为比对 `token_version` / `status` 会查一次 `kh_user`。当前量级可忽略，若日后成为瓶颈可在该层加进程内短 TTL 缓存，代价是失效有秒级延迟。
+- **未激活账号会持续堆积**：`email_verified = 0` 且再也没回来激活的账号不会被清理，需要后续加定时任务。
+- **重发激活邮件只有账号级限流**：冷却按 `username` 维度（60s），同一 IP 换着用户名打仍能触发发信。真正的防线是 IP / 设备维度限流，尚未实现。
+- **改邮箱接口缺失**：将来做「改邮箱」时必须同时重置 `email_verified = 0` 并删除 `kh:email-verify:user:<id>`，否则 24h 内旧激活链接能把新邮箱直接标记为已验证。
 - `src/app.module.ts` 读的是 `MONGO_URI`，而 `.env` 定义的是 `MONGODB_URI`，两者对不上 —— 实际一直静默使用代码里的硬编码默认值。改 Mongo 连接地址时要注意。
 - `vitest.config.ts` / `vitest.config.e2e.ts` 是**失效配置**：vitest 既非项目依赖也未安装，实际测试运行器是 jest。`test/app.e2e-spec.ts` 未被 `pnpm test` 覆盖（jest `rootDir` 为 `src`），且 `test:e2e` 指向不存在的 `test/jest-e2e.json`。
 - `src/app.controller.spec.ts` 用 `.js` 后缀导入（`./app.controller.js`），jest 没有配 `moduleNameMapper` 去后缀，**该 spec 当前无法运行**。
@@ -183,6 +213,8 @@ docker compose up -d
 | Elasticsearch | http://localhost:9200 | 无认证 |
 | Kibana | http://localhost:5601 | — |
 | RustFS | API `localhost:9000` / Console http://localhost:9011 | `rustfsadmin` / `rustfsadmin` |
+| Redis | `localhost:6379` | 无密码 |
+| RedisInsight | http://localhost:5540 | — |
 
 > `kh_document` 表由 `init-scripts/postgresql/init.sql` 在容器首次初始化时创建。
 
@@ -224,11 +256,33 @@ JWT_ACCESS_SECRET=<随机 32 字节 hex>
 JWT_ACCESS_EXPIRES_IN=2h
 JWT_REFRESH_SECRET=<另一个随机 32 字节 hex>
 JWT_REFRESH_EXPIRES_IN=7d
+
+# Redis（邮箱激活 token / 重发冷却）
+REDIS_ENABLED=true
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=              # 留空 = 无密码
+
+# 邮件（SMTP）。MAIL_HOST 留空 = 激活链接改打到日志，日志里搜 EMAIL_VERIFY_LINK
+MAIL_ENABLED=true
+MAIL_HOST=
+MAIL_PORT=587
+MAIL_SECURE=false            # 465 端口改 true；587 走 STARTTLS 用 false
+MAIL_USER=
+MAIL_PASS=                   # QQ / 163 这类邮箱填「授权码」，不是登录密码
+MAIL_FROM="Knowledge Hub <no-reply@localhost>"
+
+# 激活邮件
+EMAIL_VERIFY_URL=http://localhost:3000/auth/verify-email
+EMAIL_VERIFY_TOKEN_TTL_SECONDS=86400
+EMAIL_VERIFY_RESEND_COOLDOWN_SECONDS=60
 ```
 
 > `EMBEDDING_API_KEY` / `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` 三者任选其一即可。
 > 三个开关（`RUSTFS_ENABLED` / `RABBITMQ_ENABLED` / `ELASTICSEARCH_ENABLED`）置 `false` 可跳过对应外部依赖，便于本地最小化启动。
 > JWT secret 生成方式：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`。留空或沿用 `.env.example` 里的占位值会导致**服务启动失败**（故意如此，避免用弱密钥上线）。
+> **`MAIL_FROM` 别写成 `"显示名" <地址>`** —— dotenv 会在引号处截断、把地址丢掉，必须写成 `"显示名 <地址>"` 或只写地址。
+> `EMAIL_VERIFY_URL` 是邮件链接的完整基地址（`?token=` 由代码拼）。将来有了前端激活页，把它指向前端页面即可，不必改代码。
 
 > ⚠️ **`init.sql` 只在 PostgreSQL 数据目录为空时执行一次。** 如果 `volumes/postgres` 已存在（即之前起过一次），新增的表**不会**被自动创建。手动补灌（脚本幂等，可重复执行）：
 >
@@ -246,10 +300,10 @@ pnpm build && pnpm start:prod   # 生产构建
 
 服务默认监听 `http://localhost:3000`。
 
-只有 `GET /` 是公开的，其余接口都要先登录拿令牌：
+除 `/` 与 `/auth/*` 的几个公开接口外，其余都要先登录拿令牌：
 
 ```bash
-# 登录并取出 accessToken（测试账号 admin / reviewer / user，密码均为 123456）
+# 登录并取出 accessToken（测试账号 admin / reviewer / user，密码均为 123456，邮箱已验证）
 AT=$(curl -s -X POST http://localhost:3000/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"123456"}' \
@@ -258,18 +312,31 @@ AT=$(curl -s -X POST http://localhost:3000/auth/login \
 curl http://localhost:3000/documents -H "Authorization: Bearer $AT"
 ```
 
+新用户注册后**必须先激活邮箱才能登录**：
+
+```bash
+curl -X POST http://localhost:3000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"123456","email":"alice@company.com"}'
+
+# 激活链接会发到邮箱；没配 SMTP 时改打在服务端日志里，搜 EMAIL_VERIFY_LINK 即可
+curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
+```
+
 ---
 
 ## API 一览
 
-> 除 `/` 与 `/auth/login|register|refresh|logout` 外，**所有接口都需要 `Authorization: Bearer <accessToken>`**。完整字段说明见 [`接口文档.md`](./接口文档.md)。
+> 除 `/` 与 `/auth/register|verify-email|resend-verification|login|refresh|logout` 外，**所有接口都需要 `Authorization: Bearer <accessToken>`**。完整字段说明见 [`接口文档.md`](./接口文档.md)。
 
 **鉴权**
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/auth/register` | 注册，返回令牌，默认授予 `ROLE_USER` |
-| `POST` | `/auth/login` | 登录，返回 access + refresh 令牌 |
+| `POST` | `/auth/register` | 注册，**不发令牌**，发送激活邮件，默认授予 `ROLE_USER` |
+| `GET` | `/auth/verify-email` | 邮箱激活（邮件里的链接直接指向它），幂等 |
+| `POST` | `/auth/resend-verification` | 重发激活邮件（60 秒冷却，响应恒定） |
+| `POST` | `/auth/login` | 登录，返回 access + refresh 令牌。**未激活返回 403** |
 | `POST` | `/auth/refresh` | 刷新令牌（轮换，旧 refresh 立即失效） |
 | `POST` | `/auth/logout` | 登出，吊销 refresh 令牌（幂等） |
 | `GET` | `/auth/profile` | 当前登录用户信息 |
@@ -301,7 +368,7 @@ curl http://localhost:3000/documents -H "Authorization: Bearer $AT"
 | `POST` | `/documents/reviews/tasks/:taskId/approve` | `ADMIN` / `REVIEWER` | 审核通过 |
 | `POST` | `/documents/reviews/tasks/:taskId/reject` | `ADMIN` / `REVIEWER` | 审核驳回 |
 
-**测试账号**（密码均为 `123456`）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。
+**测试账号**（密码均为 `123456`，邮箱已验证，可直接登录）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。
 
 ---
 
@@ -319,8 +386,9 @@ src/
 │   ├── auth.controller.ts
 │   ├── auth.module.ts          # 全局 APP_GUARD 在此注册
 │   ├── auth.service.ts         # 注册 / 登录 / 刷新 / 登出 / 当前用户
+│   ├── email-verification.service.ts # 激活 token 的签发 / 校验 / 重发
 │   └── token.service.ts        # 令牌签发、校验、轮换、吊销
-├── common/                     # 雪花 ID、traceId、BIGINT 序列化转换
+├── common/                     # 雪花 ID、SHA-256、traceId、BIGINT 序列化转换
 ├── document/                   # 文档领域
 │   ├── dto/                    # 入参校验（DTO）
 │   ├── entities/               # Postgres 实体
@@ -331,6 +399,7 @@ src/
 │   ├── document.controller.ts
 │   ├── document.module.ts
 │   └── document.service.ts
+├── mail/                       # nodemailer + SMTP（未配置时降级为打印链接）
 ├── mq/                         # RabbitMQ 生产者 / 消费者 / 拓扑常量
 ├── pipeline/                   # 发布后知识管线
 │   ├── chunking.service.ts     # 分块
@@ -338,6 +407,7 @@ src/
 │   ├── vector-index.service.ts # ES kh_chunk 写入
 │   ├── search-index.service.ts # ES kh_document 写入
 │   └── pipeline.orchestrator.ts# 管线编排
+├── redis/                      # ioredis（激活 token / 频率限制）
 ├── storage/                    # RustFS 对象存储
 ├── app.module.ts
 └── main.ts
@@ -350,7 +420,8 @@ src/
 - **ID**：统一雪花 ID，以 `string` 全链路传递（Postgres 列为 `BIGINT`，通过 transformer 转换，避免 JS `number` 精度丢失）
 - **软删除**：Postgres 与 Mongo 两侧 `deleted` 同步置位，查询默认过滤
 - **双写一致性**：正文先落 Mongo，再落 Postgres；Postgres 失败回滚 Mongo，反之不做补偿
-- **降级优先**：外部依赖（ES / MQ / RustFS）不可用时不阻断主流程，记日志 + 告警降级
+- **降级优先**：外部依赖（ES / MQ / RustFS）不可用时不阻断主流程，记日志 + 告警降级。**两个例外，方向刻意相反**：Redis 在「注册 / 激活 / 重发」上不可用则直接 503（宁可失败也不建出无法激活的僵尸账号），而登录 / 刷新 / 文档链路完全不依赖它；邮件则**永不抛错**，SMTP 没配就把链接打到日志
+- **只存哈希**：刷新令牌与邮箱激活 token 都只存 SHA-256，不存原文（见 `src/common/hash.ts`）。代价是不可逆、无法反查，调试要靠签发方留日志
 - **鉴权默认拒绝**：全局 `JwtAuthGuard` 要求所有路由携带有效 access token，用 `@Public()` 开白名单。**新增接口若忘记标注，会直接 401**
 - **身份只从 JWT 取**：`authorId` / `createBy` / `updateBy` / `reviewerId` / `reviewerName` 一律由服务端从令牌解析，**不接受请求体传入**（旧字段保留仅为兼容，已停止生效）
 - **绝不展开实体**：响应必须显式挑字段构造（见 `AuthService.toAuthUser`），不允许 `{ ...user }`，否则 `password` 会被序列化出去

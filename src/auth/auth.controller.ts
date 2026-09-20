@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { AuthService } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
@@ -7,6 +7,8 @@ import { LoginDto } from './dto/login.dto.js';
 import { LogoutDto } from './dto/logout.dto.js';
 import { RefreshTokenDto } from './dto/refresh-token.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { ResendVerificationDto } from './dto/resend-verification.dto.js';
+import { VerifyEmailDto } from './dto/verify-email.dto.js';
 import type { AuthenticatedUser } from './types/authenticated-user.type.js';
 import type { TokenContext } from './types/token-context.type.js';
 
@@ -29,18 +31,48 @@ function requestContext(req: Request): TokenContext {
 /**
  * 用户鉴权
  *
- * 登录 / 注册 / 刷新 / 登出均为 @Public()（此时还没有或不需要有效 access token），
+ * 注册 / 激活 / 重发 / 登录 / 刷新 / 登出均为 @Public()（此时还没有或不需要有效 access token），
  * profile 走全局 JwtAuthGuard，需要携带 access token。
+ *
+ * 注意注册**不再签发令牌**：注册后必须点激活邮件里的链接，激活成功才能登录。
+ * 「注册 / 激活 / 重发」这三个接口都不返回令牌。
  */
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  /** 注册：创建用户并直接签发令牌，默认授予 ROLE_USER */
+  /** 注册：创建用户（未激活）并发送激活邮件，默认授予 ROLE_USER */
   @Public()
   @Post('register')
-  register(@Body() dto: RegisterDto, @Req() req: Request) {
-    return this.authService.register(dto, requestContext(req));
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
+  }
+
+  /**
+   * 邮箱激活：校验邮件里带过来的 token，把 email_verified 置 1。
+   *
+   * GET 带状态变更并不符合 HTTP 语义，但邮件里的链接只可能是 GET，且本操作是幂等的
+   * （重复点击返回 alreadyVerified = true 而不是报错），所以这是可接受的取舍。
+   *
+   * 必须用 DTO 收 query：全局 ValidationPipe 只对 DTO 类生效，`@Query('token')` 裸参数
+   * 完全不过校验。也因此邮件链接里**不能**附带 utm_* 之类参数，会被 forbidNonWhitelisted 挡下。
+   */
+  @Public()
+  @Get('verify-email')
+  verifyEmail(@Query() query: VerifyEmailDto) {
+    return this.authService.verifyEmail(query.token);
+  }
+
+  /**
+   * 重发激活邮件。
+   *
+   * 响应恒定（不区分账号是否存在 / 是否已激活），否则就成了「账号是否已激活」的枚举器；
+   * 60 秒冷却内的重复请求返回 429。
+   */
+  @Public()
+  @Post('resend-verification')
+  resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerification(dto.username);
   }
 
   /** 登录：返回 access + refresh 令牌 */

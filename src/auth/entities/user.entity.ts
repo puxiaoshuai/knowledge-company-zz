@@ -15,6 +15,20 @@ export const UserStatus = {
 
 export type UserStatus = (typeof UserStatus)[keyof typeof UserStatus];
 
+/**
+ * 邮箱是否已验证：0 未验证 1 已验证。
+ *
+ * 刻意不复用 UserStatus 表达「未验证」——`status = 0` 的登录文案是「账号已被禁用」，
+ * 与「注册了但没点激活链接」是完全不同的两件事，混在一起运营侧就无法区分，
+ * 也没法给用户回放正确的提示。
+ */
+export const EmailVerified = {
+  No: 0,
+  Yes: 1,
+} as const;
+
+export type EmailVerified = (typeof EmailVerified)[keyof typeof EmailVerified];
+
 /** 用户（PostgreSQL kh_user） */
 @Entity('kh_user')
 export class UserEntity {
@@ -33,6 +47,19 @@ export class UserEntity {
   /** 邮箱 */
   @Column({ type: 'varchar', length: 100, nullable: true })
   email?: string | null;
+
+  /**
+   * 邮箱是否已验证（0 未验证 / 1 已验证）。
+   *
+   * 注册时固定写 EmailVerified.No，必须点完邮件里的激活链接才会变成 Yes；
+   * 为 No 时禁止登录（见 AuthService.login）。存量账号由迁移脚本统一置 1。
+   */
+  @Column({
+    name: 'email_verified',
+    type: 'smallint',
+    default: EmailVerified.No,
+  })
+  emailVerified: EmailVerified;
 
   /** 真实姓名 / 显示名 */
   @Column({ name: 'real_name', type: 'varchar', length: 50, nullable: true })

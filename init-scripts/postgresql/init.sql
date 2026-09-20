@@ -43,13 +43,16 @@ CREATE INDEX IF NOT EXISTS idx_kh_document_review_document_id ON kh_document_rev
 -- 待办列表：仅 review_result IS NULL 的行
 CREATE INDEX IF NOT EXISTS idx_kh_document_review_pending ON kh_document_review(review_result) WHERE review_result IS NULL;
 
--- ==================== 用户与角色（第一期：简化注册，注册后立即可登录） ====================
+-- ==================== 用户与角色（注册后需邮箱激活才能登录） ====================
 
 CREATE TABLE IF NOT EXISTS kh_user (
     id BIGINT PRIMARY KEY,                          -- 用户 ID（雪花）
     username VARCHAR(50) NOT NULL,                  -- 登录用户名
     password VARCHAR(255) NOT NULL,                 -- 密码（bcrypt 哈希）
-    email VARCHAR(100),                             -- 邮箱（可选）
+    email VARCHAR(100),                             -- 邮箱。注册接口必填（激活与后续找回的唯一通道），
+                                                    -- 但列保持可空：存量/后台建的账号可能没有邮箱，
+                                                    -- 它们已被迁移脚本放行，不该被列约束卡住
+    email_verified SMALLINT NOT NULL DEFAULT 0,     -- 邮箱是否已验证：0 未验证 1 已验证（0 时禁止登录）
     real_name VARCHAR(50),                          -- 真实姓名 / 显示名
     avatar VARCHAR(500),                            -- 头像 URL
     status SMALLINT NOT NULL DEFAULT 1,             -- 0 禁用 1 启用
@@ -61,6 +64,10 @@ CREATE TABLE IF NOT EXISTS kh_user (
 );
 -- 未删除用户名唯一
 CREATE UNIQUE INDEX IF NOT EXISTS uk_kh_user_username ON kh_user(username) WHERE deleted = false;
+-- 未删除邮箱唯一。必须带 deleted = false，否则软删除用户的邮箱会被永久锁死、谁都注册不了。
+-- 唯一索引大小写敏感（Alice@x.com ≠ alice@x.com），靠应用层 trim + toLowerCase 归一，
+-- 不用 lower(email) 函数索引——那会让实体层的查询写法变复杂，且目前没有按邮箱查用户的路径。
+CREATE UNIQUE INDEX IF NOT EXISTS uk_kh_user_email ON kh_user(email) WHERE deleted = false AND email IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS kh_role (
     id BIGINT PRIMARY KEY,                          -- 角色 ID（雪花）
@@ -87,10 +94,11 @@ INSERT INTO kh_role (id, role_name, role_code, description) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- 测试账号（密码均为 123456，bcrypt）
-INSERT INTO kh_user (id, username, password, email, real_name, status) VALUES
-    (1000000000000000001, 'admin', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'admin@company.com', '系统管理员', 1),
-    (1000000000000000002, 'reviewer', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'reviewer@company.com', '审核员张三', 1),
-    (1000000000000000003, 'user', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'user@company.com', '普通用户李四', 1)
+-- email_verified 必须显式写 1：不写就会落到 DEFAULT 0，db:reset 之后三个种子账号全部登录不了
+INSERT INTO kh_user (id, username, password, email, email_verified, real_name, status) VALUES
+    (1000000000000000001, 'admin', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'admin@company.com', 1, '系统管理员', 1),
+    (1000000000000000002, 'reviewer', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'reviewer@company.com', 1, '审核员张三', 1),
+    (1000000000000000003, 'user', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'user@company.com', 1, '普通用户李四', 1)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO kh_user_role (id, user_id, role_id) VALUES
@@ -100,7 +108,10 @@ INSERT INTO kh_user_role (id, user_id, role_id) VALUES
     (3000000000000000004, 1000000000000000003, 2000000000000000003)   -- user → 普通用户
 ON CONFLICT (id) DO NOTHING;
 
--- ==================== 刷新令牌（无 Redis，落库；只存哈希，不存原文） ====================
+-- ==================== 刷新令牌（落库；只存哈希，不存原文） ====================
+-- 刻意不搬进 Redis：刷新令牌要能列出会话、按用户批量吊销、追溯轮换链（replaced_by_id），
+-- 且必须比缓存活得久——Redis 一次 FLUSH 就等于全员掉线。邮箱激活 token 则是短时、一次性的，
+-- 适合放 Redis（见 src/auth/email-verification.service.ts）。
 
 CREATE TABLE IF NOT EXISTS kh_refresh_token (
     id BIGINT PRIMARY KEY,                          -- 令牌记录 ID（雪花）

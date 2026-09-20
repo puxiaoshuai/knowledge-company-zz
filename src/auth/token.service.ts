@@ -6,8 +6,9 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { JwtSignOptions } from '@nestjs/jwt';
 import { InjectEntityManager } from '@nestjs/typeorm';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { EntityManager } from 'typeorm';
+import { sha256Hex } from '../common/hash.js';
 import { nextSnowflakeId } from '../common/snowflake-id.js';
 import { RefreshTokenEntity } from './entities/refresh-token.entity.js';
 import { UserEntity, UserStatus } from './entities/user.entity.js';
@@ -23,9 +24,7 @@ import type {
 } from './types/token-context.type.js';
 
 /** 刷新令牌原文 → SHA-256 hex（64 字符）。库里只存哈希，泄库也无法直接使用 */
-function hashToken(rawToken: string): string {
-  return createHash('sha256').update(rawToken).digest('hex');
-}
+const hashToken = sha256Hex;
 
 /** 读取必填的 JWT secret；缺失或仍是 .env.example 占位值时直接启动失败，避免用弱密钥上线 */
 function requireSecret(config: ConfigService, key: string): string {
