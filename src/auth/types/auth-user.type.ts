@@ -92,3 +92,14 @@ export interface ResetPasswordResult {
   success: true;
   message: string;
 }
+
+/**
+ * 修改密码结果（已登录，凭当前密码）。
+ *
+ * 与 ResetPasswordResult 同样是「受理结果」而**不含令牌**：改密码会让该用户
+ * 全部已签发令牌失效，所以本次请求之后必须用新密码重新登录。
+ */
+export interface ChangePasswordResult {
+  success: true;
+  message: string;
+}

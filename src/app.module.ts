@@ -17,6 +17,7 @@ import { MqModule } from './mq/mq.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
+import { UserModule } from './user/user.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { StorageModule } from './storage/storage.module';
     }),
     DocumentModule,
     AuthModule,
+    UserModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -119,13 +119,16 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 | --- | --- | --- |
 | `POST /auth/logout`（默认，单设备） | 吊销当前这条 | **立即失效**（版本号 +1） |
 | `POST /auth/logout` `allDevices: true` | 吊销该用户全部 | **立即失效**（版本号 +1） |
+| `PATCH /users/:id` 改 `status` / 角色 / 邮箱验证状态 | 吊销该用户全部 | **立即失效**（版本号 +1） |
+| `DELETE /users/:id`（软删） | 吊销该用户全部 | **立即失效**（版本号 +1） |
+| `POST /auth/change-password` | 吊销该用户全部 | **立即失效**（版本号 +1） |
 | 改库 `status = 0` | 不变 | **立即失效**（每次比对状态） |
 | 改库 `token_version = token_version + 1` | 不变 | **立即失效** |
 | 检出 refresh 令牌复用 | 吊销该用户全部 | **立即失效** |
 
 > **失效粒度是「用户」而非「设备」**：一台设备登出会让该用户**其他设备**的 access token 一起被拒。但它们没被吊销 refresh 令牌，前端在 401 时用 refresh 换新令牌即可无感恢复 —— 所以**前端必须实现「401 → 用 refreshToken 换新令牌后重试」**，否则多设备体验会退化成「一处登出、处处掉线」。
 
-> **禁用后重新启用，旧令牌会复活**：禁用只比对 `status`、不动版本号，所以 `status` 改回 `1` 之后原先那枚 access token 又可用。若要求「重新启用必须重新登录」（如离职复职），禁用时连同自增：`UPDATE kh_user SET status = 0, token_version = token_version + 1 WHERE id = ?`。
+> **禁用后重新启用，旧令牌会复活**（走管理接口时**已修复**）：原先禁用只比对 `status`、不动版本号，所以 `status` 改回 `1` 之后原先那枚 access token 又可用。现在 `PATCH /users/:id` 把 `status` 改为 `0` 时会一并吊销该用户全部令牌，复职必须重新登录。**手工改库仍有此问题**，需自行执行：`UPDATE kh_user SET status = 0, token_version = token_version + 1 WHERE id = ?`。
 
 ### 5. 邮箱激活（`/auth`）
 
@@ -178,6 +181,28 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 
 > ⚠️ 降级策略同激活链路：`MAIL_HOST` 为空时验证码会打到日志（搜 `PASSWORD_RESET_CODE`），Redis 不可用则直接 503。验证码进日志的风险**明显高于激活链接**（相当于给有日志读权限的人一个账号接管入口），保留是因为 10 分钟 TTL 窗口很短、且哈希不可逆没法从 Redis 反查 —— 生产环境应保证 SMTP 可用并限制日志读取权限。
 
+### 7. 修改密码（`POST /auth/change-password`）
+
+已登录状态下凭**当前密码**改自己的密码。身份取自 JWT，**不接受请求体传用户名** —— 这是它与「找回密码」的本质区别：前者证明「我持有旧密码」，后者证明「我能收到绑定邮箱的验证码」。两条链路的凭据强度、限流与生命周期都不同，因此是两套独立实现，唯一相同的只有「成功后全部下线」这个结果。
+
+成功后该用户全部令牌立即失效、**不返回新令牌**，需用新密码重新登录一次。落库用 `em.update` 且只写 `password` 一个字段 —— `save(entity)` 会把自增前的 `token_version` 写回去，等于把刚吊销的令牌全部复活。
+
+> 旧密码错误返回 **400** 而不是 401：本项目把 401 定义为前端「清令牌 / 走 401→refresh→重试」的信号，而这里的调用方令牌完全有效，回 401 会触发一次必然失败的刷新重试甚至循环。
+
+### 8. 用户管理（`/users`，仅 `ROLE_ADMIN`）
+
+控制器上统一标注 `@Roles(RoleCode.Admin)`，6 个接口：分页列表（用户名 / 邮箱模糊 + 状态 + 角色筛选）、角色选项、详情、新增、修改、软删除。软删记录在列表、详情、修改、删除里一律 404「用户不存在」，不区分「不存在」与「已删除」——后者等于把「这个用户名曾经存在」透给一个已经无权看它的管理员。
+
+**三条贯穿全模块的取舍：**
+
+- **改权限即下线**。角色内嵌在 JWT 载荷里而 guard 不重取，不吊销的话改角色最长 2h 才生效（降权尤其不能等）。所以角色变更、禁用、邮箱验证状态降为 `0` 都会立刻吊销该用户全部令牌 —— 等效于强制下线。代价是用户被登出，但对权限变更而言这是恰当且符合预期的。
+- **保护最后一个管理员**。删除 / 禁用 / 摘掉 `ROLE_ADMIN` 前都要确认系统里还有别的启用中管理员，否则系统会**永久失去**管理能力，只能改库恢复。同时禁止删除 / 禁用 / 置为未验证**自己**（这几个操作会让响应返回时自己的令牌已死，无法撤销）。
+- **改邮箱重置验证状态**。激活 token 与 `userId` 绑定、不校验邮箱值，所以改邮箱必须同时把 `email_verified` 重置为 `0` 并作废待用的激活 token，否则旧链接能把**新**邮箱直接标记为已验证。同一个请求里若还传了 `emailVerified`，以它为准。
+
+**与注册的差别**：管理员建号直接指定密码与角色，`email_verified` 直接置 1 且**不发激活邮件** —— 这条链路没有「证明邮箱归属」的环节，verified 表达的是「管理员断言了这个地址」。代价是邮箱写错时会得到一个「已验证的错误地址」，纠正手段是改邮箱。
+
+**不可改字段**：`username` / `password` 不在 DTO 里声明，传了会被 `forbidNonWhitelisted` 判 400。改密码走 `POST /auth/change-password`。
+
 ---
 
 ## 当前进度
@@ -195,6 +220,8 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - [x] 用户 / 鉴权 / 权限体系（JWT 双令牌 + 全局默认拒绝守卫 + `@Roles` 角色校验 + `token_version` 即时失效）
 - [x] 邮箱激活（注册后发激活邮件，Redis 存 token，未激活禁止登录，支持重发与限流）
 - [x] 找回密码（用户名 + 邮箱验证码重置密码，重置后全量下线旧会话）
+- [x] 已登录凭旧密码改密码（`POST /auth/change-password`，成功后全量下线）
+- [x] 用户管理（管理员：分页查询 / 详情 / 新增 / 修改 / 软删除 + 角色分配，含最后管理员保护）
 - [x] 雪花 ID 生成、BIGINT 序列化转换、traceId 链路日志
 
 ### 🚧 待办
@@ -204,8 +231,10 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - [ ] 分块实体关系抽取，构建知识图谱
 - [ ] RAG 问答链路（召回 + LLM 生成 + 引用溯源）
 - [ ] 文档级权限：已登录用户目前可改任意文档，尚无「只能改自己的」归属校验
-- [ ] 用户管理接口（改密 / 禁用 / 分配角色），当前只能直接改库
-- [ ] 已登录状态下凭旧密码改密码（找回密码那条链路已就位，缺的是 `POST /auth/change-password`）
+- [ ] 管理员重置他人密码（当前只有用户自助改密；管理员无法代改）
+- [ ] 用户自助改邮箱、用户名改名（后台可改邮箱，但不支持改用户名）
+- [ ] 已软删用户的查看 / 恢复（`/users` 一律不返回已删记录，恢复目前只能改库）
+- [ ] `change-password` 的失败次数限流（access token 2h 内可无限次猜旧密码）
 - [ ] `kh_refresh_token` 过期行清理任务
 - [ ] 未激活账号清理任务（`email_verified = 0` 且长期未激活的会一直堆积）
 - [ ] 单元测试与 e2e 测试（当前仅脚手架自带的 1 个 spec）
@@ -215,7 +244,10 @@ access token 无状态、**签发后在过期前无法单独撤销**，因此「
 - **全文搜索目前只有索引写入，没有查询接口**。`SearchIndexService` 仅提供 `indexDocument` / `deleteDocument`，`kh_document` 写入后尚未被任何接口读取。
 - `kh_document` 与 `kh_chunk` 的 mapping 均**未指定 IK 分析器**（`content`/`title` 使用默认 `standard`）。IK 插件已内置到 ES 镜像，但中文分词效果要在 mapping 里显式配置 `analyzer: ik_max_word` / `search_analyzer: ik_smart` 才能生效。
 - 向量块同样**只写不读**，尚无 kNN 检索入口。
-- **角色变更最长 2h 生效**：角色内嵌在 JWT 载荷里，guard 只比对账号状态与令牌版本号、**不重取角色**；用户刷新令牌时会重新取最新角色，可提前生效。要即时生效得把角色移出 JWT 或单独做版本号。
+- **角色变更最长 2h 生效**（走 `PATCH /users/:id` 时不受此限）：角色内嵌在 JWT 载荷里，guard 只比对账号状态与令牌版本号、**不重取角色**；用户刷新令牌时会重新取最新角色，可提前生效。管理接口改角色后会立刻吊销该用户全部令牌，因此等效于立即生效；要彻底根除得把角色移出 JWT 或单独做版本号。
+- **最后一个管理员的判定不加锁**：`PATCH /users/:id` 里「还有别的启用中管理员吗」的查询与随后的写入不在同一事务、也不加行锁，两个管理员在同一瞬间互相降权时两边都可能通过检查。触发条件极窄（≥2 个管理员 + 同时降权）。根治需在事务内对管理员行集加锁。
+- **后台建号的 `email_verified = 1` 是断言而非证明**：`POST /users` 不发激活邮件，管理员邮箱写错就会得到一个「已验证的错误地址」，纠正手段是改邮箱（会把验证状态重置为 0）。
+- **`change-password` 无失败次数限制**：与「无登录失败次数限制」同类，access token 2h 内可无限次猜旧密码，bcrypt cost 10（约 200-300ms）不构成有效防线。
 - **guard 每请求多一次主键查询**：`verifyAccessToken` 为比对 `token_version` / `status` 会查一次 `kh_user`。当前量级可忽略，若日后成为瓶颈可在该层加进程内短 TTL 缓存，代价是失效有秒级延迟。
 - **未激活账号会持续堆积**：`email_verified = 0` 且再也没回来激活的账号不会被清理，需要后续加定时任务。
 - **重发激活邮件只有账号级限流**：冷却按 `username` 维度（60s），同一 IP 换着用户名打仍能触发发信。真正的防线是 IP / 设备维度限流，尚未实现。
@@ -374,6 +406,18 @@ curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
 | `POST` | `/auth/refresh` | 刷新令牌（轮换，旧 refresh 立即失效） |
 | `POST` | `/auth/logout` | 登出，吊销 refresh 令牌（幂等） |
 | `GET` | `/auth/profile` | 当前登录用户信息 |
+| `POST` | `/auth/change-password` | 凭当前密码改自己的密码，成功后**全量下线**，需重新登录 |
+
+**用户管理**（全部需要 `ROLE_ADMIN`）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/users` | 分页查询用户列表（用户名 / 邮箱模糊 + 状态 + 角色筛选） |
+| `GET` | `/users/roles` | 启用中的角色选项（下拉框用，返回 `{ items }` 无分页字段） |
+| `GET` | `/users/:id` | 用户详情 |
+| `POST` | `/users` | 新增用户（直接指定密码与角色，`email_verified` 置 1 且不发激活邮件） |
+| `PATCH` | `/users/:id` | 修改用户（含启用 / 禁用、分配角色；改邮箱会重置验证状态） |
+| `DELETE` | `/users/:id` | 软删除用户，并立即吊销其全部令牌 |
 
 **文档**
 
@@ -419,9 +463,12 @@ src/
 │   ├── types/                  # JWT 载荷、当前用户、令牌对
 │   ├── auth.controller.ts
 │   ├── auth.module.ts          # 全局 APP_GUARD 在此注册
-│   ├── auth.service.ts         # 注册 / 登录 / 刷新 / 登出 / 当前用户
-│   ├── email-verification.service.ts # 激活 token 的签发 / 校验 / 重发
-│   └── token.service.ts        # 令牌签发、校验、轮换、吊销
+│   ├── auth.service.ts         # 注册 / 登录 / 刷新 / 登出 / 当前用户 / 修改密码
+│   ├── email-verification.service.ts # 激活 token 的签发 / 校验 / 重发 / 作废
+│   ├── password-reset.service.ts     # 找回密码验证码的签发 / 校验
+│   ├── token.service.ts        # 令牌签发、校验、轮换、吊销
+│   ├── user-accessor.service.ts# 角色加载与用户视图映射（与 user 模块共用）
+│   └── user-identity.util.ts   # 邮箱归一、唯一键冲突翻译
 ├── common/                     # 雪花 ID、SHA-256、traceId、BIGINT 序列化转换
 ├── document/                   # 文档领域
 │   ├── dto/                    # 入参校验（DTO）
@@ -443,6 +490,13 @@ src/
 │   └── pipeline.orchestrator.ts# 管线编排
 ├── redis/                      # ioredis（激活 token / 频率限制）
 ├── storage/                    # RustFS 对象存储
+├── user/                       # 用户管理（仅管理员，依赖 auth 模块）
+│   ├── constants/              # 对外文案
+│   ├── dto/                    # 列表查询 / 新增 / 修改入参
+│   ├── types/                  # UserDetail（AuthUser + status/updatedAt）
+│   ├── user.controller.ts      # 类级 @Roles(ROLE_ADMIN)
+│   ├── user.module.ts
+│   └── user.service.ts         # CRUD + 安全规则 + 令牌吊销
 ├── app.module.ts
 └── main.ts
 ```
@@ -458,4 +512,7 @@ src/
 - **只存哈希**：刷新令牌与邮箱激活 token 都只存 SHA-256，不存原文（见 `src/common/hash.ts`）。代价是不可逆、无法反查，调试要靠签发方留日志
 - **鉴权默认拒绝**：全局 `JwtAuthGuard` 要求所有路由携带有效 access token，用 `@Public()` 开白名单。**新增接口若忘记标注，会直接 401**
 - **身份只从 JWT 取**：`authorId` / `createBy` / `updateBy` / `reviewerId` / `reviewerName` 一律由服务端从令牌解析，**不接受请求体传入**（旧字段保留仅为兼容，已停止生效）
-- **绝不展开实体**：响应必须显式挑字段构造（见 `AuthService.toAuthUser`），不允许 `{ ...user }`，否则 `password` 会被序列化出去
+- **绝不展开实体**：响应必须显式挑字段构造（见 `UserAccessorService.toAuthUser`），不允许 `{ ...user }`，否则 `password` 会被序列化出去。这是全仓唯一的一道关口，因此 `UserAccessorService` 由 auth 与 user 两个模块共用而不复制
+- **改权限即下线**：角色 / 状态 / 邮箱验证状态的变更一律吊销该用户全部令牌（`TokenService.revokeAllForUser`，含 `token_version` 自增）。角色内嵌在 JWT 载荷里而 guard 不重取，不吊销就等于「改了最长 2h 才生效」。宁可让用户重新登录
+- **保护最后的管理员**：删除 / 禁用 / 从最后一个启用中管理员身上摘掉 `ROLE_ADMIN` 前必须确认还有别人兜底，同时禁止删除 / 禁用 / 置为未验证自己 —— 否则系统会永久失去管理能力，只能改库恢复
+- **写 UserEntity 只用 `em.update`**：`save(entity)` 会把读出来时的 `tokenVersion` 一并回写，覆盖掉期间自增的值，等于把刚吊销的令牌全部复活

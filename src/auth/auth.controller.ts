@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import { AuthService } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { Public } from './decorators/public.decorator.js';
+import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { LogoutDto } from './dto/logout.dto.js';
@@ -34,7 +35,7 @@ function requestContext(req: Request): TokenContext {
  * 用户鉴权
  *
  * 注册 / 激活 / 重发 / 找回密码 / 重置密码 / 登录 / 刷新 / 登出均为 @Public()
- * （此时还没有或不需要有效 access token），profile 走全局 JwtAuthGuard，需要携带 access token。
+ * （此时还没有或不需要有效 access token），需要携带 access token 的是 profile 与 change-password。
  *
  * 注意注册**不再签发令牌**：注册后必须点激活邮件里的链接，激活成功才能登录。
  * 「注册 / 激活 / 重发 / 找回密码 / 重置密码」这五个接口都不返回令牌；
@@ -106,6 +107,23 @@ export class AuthController {
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  /**
+   * 修改密码：凭当前密码改自己的密码。
+   *
+   * 刻意**没有 @Public()**：身份来自 access token（@CurrentUser），
+   * 不接受请求体里传用户名 —— 这是它与上面「找回密码」的本质区别：
+   * 前者证明「我持有旧密码」，后者证明「我能收到绑定邮箱的验证码」。
+   *
+   * 成功后该用户全部已签发令牌立即失效，且不返回新令牌，需重新登录。
+   */
+  @Post('change-password')
+  changePassword(
+    @Body() dto: ChangePasswordDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.authService.changePassword(user.id, dto);
   }
 
   /** 登录：返回 access + refresh 令牌 */

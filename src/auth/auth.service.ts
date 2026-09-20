@@ -11,6 +11,7 @@ import { EntityManager } from 'typeorm';
 import { nextSnowflakeId } from '../common/snowflake-id.js';
 import { AuthMessage, BCRYPT_ROUNDS } from './constants/auth.constant.js';
 import { RoleCode } from './constants/role.constant.js';
+import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { LogoutDto } from './dto/logout.dto.js';
@@ -26,9 +27,15 @@ import {
   UserStatus,
 } from './entities/user.entity.js';
 import { TokenService } from './token.service.js';
+import { UserAccessorService } from './user-accessor.service.js';
+import {
+  normalizeEmail,
+  rethrowUserUniqueViolation,
+} from './user-identity.util.js';
 import type {
   AuthResult,
   AuthUser,
+  ChangePasswordResult,
   RegisterResult,
 } from './types/auth-user.type.js';
 import type { TokenContext } from './types/token-context.type.js';
@@ -41,31 +48,7 @@ import type { TokenContext } from './types/token-context.type.js';
 const DUMMY_PASSWORD_HASH =
   '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi';
 
-/** Postgres 唯一键冲突错误码 */
-const PG_UNIQUE_VIOLATION = '23505';
-
-/** 判断是否为 Postgres 唯一键冲突，且冲突来自指定索引 */
-function isUniqueViolationOn(error: unknown, constraint: string): boolean {
-  if (typeof error !== 'object' || error === null) {
-    return false;
-  }
-  const { code, constraint: hit } = error as {
-    code?: string;
-    constraint?: string;
-  };
-  return code === PG_UNIQUE_VIOLATION && hit === constraint;
-}
-
-/** 未删除唯一索引名，与 init-scripts/postgresql/init.sql 保持一致 */
-const UK_USERNAME = 'uk_kh_user_username';
-const UK_EMAIL = 'uk_kh_user_email';
-
-/** 邮箱入库前统一归一，与 uk_kh_user_email 的大小写敏感唯一索引配合 */
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
-
-/** 注册 / 登录 / 刷新 / 登出 / 当前用户 / 邮箱激活 / 找回密码 */
+/** 注册 / 登录 / 刷新 / 登出 / 当前用户 / 邮箱激活 / 找回密码 / 修改密码 */
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -76,6 +59,7 @@ export class AuthService {
     private readonly tokenService: TokenService,
     private readonly emailVerification: EmailVerificationService,
     private readonly passwordReset: PasswordResetService,
+    private readonly accessor: UserAccessorService,
   ) {}
 
   /**
@@ -100,7 +84,7 @@ export class AuthService {
         where: { username: dto.username, deleted: false },
       })
     ) {
-      throw new BadRequestException('用户名已存在');
+      throw new BadRequestException(AuthMessage.UsernameAlreadyTaken);
     }
     if (
       await this.em.findOne(UserEntity, {
@@ -147,14 +131,9 @@ export class AuthService {
         });
       });
     } catch (error) {
-      // 并发注册时上面的预检会漏，靠唯一索引兜底；按索引名区分是哪一个撞了
-      if (isUniqueViolationOn(error, UK_USERNAME)) {
-        throw new BadRequestException('用户名已存在');
-      }
-      if (isUniqueViolationOn(error, UK_EMAIL)) {
-        throw new BadRequestException(AuthMessage.EmailAlreadyRegistered);
-      }
-      throw error;
+      // 并发注册时上面的预检会漏，靠唯一索引兜底；按索引名区分是哪一个撞了。
+      // 与管理员后台建号共用同一个翻译函数，保证两条链路话术同源。
+      rethrowUserUniqueViolation(error);
     }
 
     // 第 6 步：账号已经建好，决策不可逆。此处再失败（Redis 恰好掉线 / SMTP 超时）
@@ -267,6 +246,57 @@ export class AuthService {
   }
 
   /**
+   * 修改密码：已登录状态下凭**当前密码**改自己的密码。
+   *
+   * 与 resetPassword 是两条独立链路，凭据强度不同：这条证明的是「我持有旧密码」，
+   * 那条证明的是「我能收到绑定邮箱的验证码」。因此限流、生命周期、失败语义都不能复用，
+   * 唯一相同的只有「成功后全部下线」这个结果。
+   *
+   * 成功即吊销该用户**全部**已签发令牌，且不签发新令牌 —— 与重置密码一致，
+   * 用户需用新密码重新登录一次。
+   */
+  async changePassword(
+    userId: string,
+    dto: ChangePasswordDto,
+  ): Promise<ChangePasswordResult> {
+    const user = await this.em.findOne(UserEntity, {
+      where: { id: userId, deleted: false },
+    });
+    // 守卫已经比对过 status 与 tokenVersion；这里再查一次是为了覆盖
+    // 「请求在途时被管理员禁用」的 TOCTOU，与 refresh 里的复查同构。
+    if (!user || user.status !== UserStatus.Enabled) {
+      throw new UnauthorizedException('账号不存在或已被禁用');
+    }
+
+    // 不做 login 那套 DUMMY_PASSWORD_HASH 等时比较：那套是为了防「用户名枚举」，
+    // 而这里的调用者已经通过鉴权，不存在需要隐藏的用户名面。
+    if (!(await compare(dto.oldPassword, user.password))) {
+      throw new BadRequestException(AuthMessage.OldPasswordIncorrect);
+    }
+    if (dto.newPassword === dto.oldPassword) {
+      throw new BadRequestException(AuthMessage.NewPasswordSameAsOld);
+    }
+
+    // bcrypt 放在全部校验之后：cost 10 约 200-300ms，先挡掉注定失败的请求再花 CPU
+    const passwordHash = await hash(dto.newPassword, BCRYPT_ROUNDS);
+
+    // 先吊销会话、后改密码 —— 与 PasswordResetService.reset 同一失败窗口取舍：
+    // 这个方向失败是「被登出但密码没变」（吵闹、可重试），
+    // 反方向是「被盗的 refresh token 仍有效而密码已变」（静默，且正是本功能要防的场景）。
+    // revokeAllForUser 内部已自增 token_version，**不要再调 bumpTokenVersion**。
+    await this.tokenService.revokeAllForUser(user.id);
+
+    // 必须用 update 而不是 save：user 是自增 token_version **之前**读出来的，
+    // save(user) 会把过期的 tokenVersion 写回去，等于把刚吊销的 access token 全部复活。
+    // 因此这里只挑 password 一个字段，tokenVersion 绝不出现在这个对象里。
+    await this.em.update(UserEntity, user.id, { password: passwordHash });
+
+    this.logger.log(`密码已修改：user=${user.username} id=${user.id}`);
+
+    return { success: true, message: AuthMessage.PasswordChanged };
+  }
+
+  /**
    * 登出：吊销刷新令牌，并让该用户已签发的 access token 立即失效。
    *
    * 幂等，令牌不存在也返回成功，避免把登出接口变成令牌有效性探测器。
@@ -309,41 +339,23 @@ export class AuthService {
     }
   }
 
-  /** 查询用户持有的角色编码（只取启用中的角色） */
-  private async loadRoleCodes(userId: string): Promise<RoleCode[]> {
-    const roles = await this.em
-      .createQueryBuilder(RoleEntity, 'role')
-      .innerJoin(UserRoleEntity, 'ur', 'ur.role_id = role.id')
-      .where('ur.user_id = :userId', { userId })
-      .andWhere('role.status = :status', { status: 1 })
-      .getMany();
-
-    return roles.map((role) => role.roleCode as RoleCode);
+  /**
+   * 查询用户持有的角色编码（只取启用中的角色）。
+   *
+   * 实现已挪到 UserAccessorService —— 管理员链路也要回答同一个问题，
+   * 而其中的「启用过滤」是授权谓词，绝不能有两份。
+   */
+  private loadRoleCodes(userId: string): Promise<RoleCode[]> {
+    return this.accessor.loadRoleCodes(userId);
   }
 
   /** 组装 JWT 载荷用的主体 */
   private toTokenSubject(user: UserEntity, roles: RoleCode[]) {
-    return {
-      id: user.id,
-      username: user.username,
-      name: user.realName?.trim() || user.username,
-      roles,
-      tokenVersion: user.tokenVersion,
-    };
+    return this.accessor.toTokenSubject(user, roles);
   }
 
   /** 显式挑字段构造响应 —— 绝不能用 { ...user }，否则 password 会被序列化出去 */
   private toAuthUser(user: UserEntity, roles: RoleCode[]): AuthUser {
-    return {
-      id: user.id,
-      username: user.username,
-      email: user.email ?? null,
-      realName: user.realName ?? null,
-      avatar: user.avatar ?? null,
-      roles,
-      emailVerified: user.emailVerified === EmailVerified.Yes,
-      lastLoginAt: user.lastLoginAt ?? null,
-      createdAt: user.createdAt,
-    };
+    return this.accessor.toAuthUser(user, roles);
   }
 }

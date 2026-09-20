@@ -113,16 +113,31 @@ export class EmailVerificationService {
 
     // 先让旧 token 失效。不做 MULTI：中间窗口只有微秒级，最坏是「旧的已失效、新的还没写进去」，
     // 用户再点一次重发即可恢复。要强一致可在 RedisService 上加 multi() 包装。
-    const previousHash = await this.redis.get(userKey(user.id));
-    if (previousHash) {
-      await this.redis.del(tokenKey(previousHash));
-    }
+    await this.invalidateFor(user.id);
 
     await this.redis.set(tokenKey(tokenHash), user.id, this.tokenTtlSeconds);
     await this.redis.set(userKey(user.id), tokenHash, this.tokenTtlSeconds);
 
     const link = this.buildLink(rawToken);
     await this.mail.sendVerificationEmail(user.email, link, user.username);
+  }
+
+  /**
+   * 作废该用户当前待用的激活 token（改邮箱 / 软删账号时调用）。
+   *
+   * 两个 key 是一对：`user:<id>` 存当前 token 的哈希，`token:<hash>` 反查 userId。
+   * **只删前者是不够的** —— 那条反向映射会一直挂到 TTL 到期，
+   * 而它正是 `verify` 真正读取的那个 key，留着就等于旧链接依然可点。
+   *
+   * key 的拼装是本服务的私有约定，所以把删除动作做成公开方法暴露出去，
+   * 而不是让调用方（user 模块）自己去拼 `kh:email-verify:user:` 前缀。
+   */
+  async invalidateFor(userId: string): Promise<void> {
+    const previousHash = await this.redis.get(userKey(userId));
+    if (previousHash) {
+      await this.redis.del(tokenKey(previousHash));
+    }
+    await this.redis.del(userKey(userId));
   }
 
   /**

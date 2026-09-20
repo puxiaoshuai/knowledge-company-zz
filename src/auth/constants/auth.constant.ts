@@ -60,6 +60,13 @@ export const PASSWORD_RESET_MAX_REQUESTS_PER_HOUR_DEFAULT = 5;
  * 改文案必须同步改文档，散落在各 service 里就没人记得住。
  */
 export const AuthMessage = {
+  /**
+   * 400：用户名与已有账号重复。
+   *
+   * 「注册」与「管理员后台建号」共用这一句 —— 两条链路的判定依据都是
+   * uk_kh_user_username 这一个索引，文案必须同源。
+   */
+  UsernameAlreadyTaken: '用户名已存在',
   /** 403：密码正确但邮箱未激活 */
   EmailNotVerified: '邮箱未验证，请先点击激活邮件中的链接',
   /** 400：token 不存在 / 已过期 / 对应用户已不存在 */
@@ -92,4 +99,17 @@ export const AuthMessage = {
   ResetPasswordCodeInvalid: '验证码无效或已过期，请重新获取',
   /** 200：重置成功。不签发令牌，用户需用新密码重新登录 */
   ResetPasswordSuccess: '密码已重置，请用新密码登录',
+  /**
+   * 400：修改密码时当前密码不正确。
+   *
+   * 刻意用 400 而不是 401：本项目已把 401 定义为前端「清令牌 / 跳登录页 /
+   * 走 401→refresh→重试」的信号，而这里调用方的令牌完全有效、
+   * 身份也已确认，塞进 401 会触发一次必然失败的刷新重试甚至循环。
+   * 与「/auth/login 的 403 只表示邮箱未验证」是同一类取舍。
+   */
+  OldPasswordIncorrect: '当前密码不正确',
+  /** 400：新密码与当前密码相同 —— 白白付出「全部设备下线」的代价却什么都没改 */
+  NewPasswordSameAsOld: '新密码不能与当前密码相同',
+  /** 200：修改成功。不签发令牌，用户需用新密码重新登录 */
+  PasswordChanged: '密码已修改，请用新密码重新登录',
 } as const;
