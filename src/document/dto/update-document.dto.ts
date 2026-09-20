@@ -6,7 +6,7 @@ import { CreateDocumentDto } from './create-document.dto.js';
 export class UpdateDocumentDto extends PartialType(
   OmitType(CreateDocumentDto, ['createBy'] as const),
 ) {
-  /** 更新人 ID */
+  /** @deprecated 更新人已改从 JWT 取当前用户，每次更新都会写入 */
   @IsOptional()
   @IsString()
   updateBy?: string;

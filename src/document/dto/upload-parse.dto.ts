@@ -11,6 +11,7 @@ export class UploadParseDto {
   @IsString()
   teamId?: string;
 
+  /** @deprecated 已改从 JWT 取当前用户，此字段不再生效 */
   @IsOptional()
   @IsString()
   authorId?: string;
@@ -23,6 +24,7 @@ export class UploadParseDto {
   @IsString()
   remark?: string;
 
+  /** @deprecated 同上，作者 / 创建人已改从 JWT 取当前用户 */
   @IsOptional()
   @IsString()
   createBy?: string;

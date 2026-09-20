@@ -62,8 +62,10 @@ export class DocumentService {
    * 创建文档
    * 流程：生成雪花 ID → 写 Mongo 正文（拿 ObjectId）→ 写 Postgres 元数据
    * 若 Postgres 写入失败，回滚删除已写入的 Mongo 正文，避免脏数据
+   *
+   * @param actorId 当前登录用户 ID，作为作者与创建人落库（不接受请求体传入，防止身份伪造）
    */
-  async create(dto: CreateDocumentDto) {
+  async create(dto: CreateDocumentDto, actorId: string) {
     const requestedStatus = dto.status ?? DocumentStatus.Draft;
     // 创建时不允许直接设为 Archived / PendingReview
     if (
@@ -107,7 +109,8 @@ export class DocumentService {
         summary: dto.summary,
         categoryId: dto.categoryId,
         teamId: dto.teamId,
-        authorId: dto.authorId,
+        // 作者 / 创建人一律取自 JWT，忽略请求体里的同名字段
+        authorId: actorId,
         coverImage: dto.coverImage,
         tags: dto.tags,
         status,
@@ -116,8 +119,8 @@ export class DocumentService {
         wordCount,
         // 创建即发布时，记录发布时间
         publishTime: status === DocumentStatus.Published ? new Date() : null,
-        createBy: dto.createBy,
-        updateBy: dto.createBy,
+        createBy: actorId,
+        updateBy: actorId,
         deleted: false,
       });
 
@@ -215,8 +218,10 @@ export class DocumentService {
    * - 有 content：同步更新 Mongo 正文，并递增 version
    * - 仅改 summary：同步更新 Mongo contentSummary
    * - 其余字段只更新 Postgres 元数据
+   *
+   * @param actorId 当前登录用户 ID，每次更新都写入 update_by
    */
-  async update(id: string, dto: UpdateDocumentDto) {
+  async update(id: string, dto: UpdateDocumentDto, actorId: string) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
     });
@@ -288,12 +293,12 @@ export class DocumentService {
     if (dto.summary !== undefined) doc.summary = dto.summary;
     if (dto.categoryId !== undefined) doc.categoryId = dto.categoryId;
     if (dto.teamId !== undefined) doc.teamId = dto.teamId;
-    if (dto.authorId !== undefined) doc.authorId = dto.authorId;
     if (dto.coverImage !== undefined) doc.coverImage = dto.coverImage;
     if (dto.tags !== undefined) doc.tags = dto.tags;
     if (dto.remark !== undefined) doc.remark = dto.remark;
     if (dto.isPublic !== undefined) doc.isPublic = dto.isPublic;
-    if (dto.updateBy !== undefined) doc.updateBy = dto.updateBy;
+    // 更新人一律取自 JWT，且每次更新都会写入
+    doc.updateBy = actorId;
 
     const saved = await this.em.save(doc);
     const finalContent = newContent ?? (await this.loadContent(doc.contentId));
@@ -447,9 +452,10 @@ export class DocumentService {
     return { id, deleted: true };
   }
 
-  /** 上传并解析文件 → 创建草稿文档 */
+  /** 上传并解析文件 → 创建草稿文档（作者 / 创建人取自 JWT） */
   async uploadAndCreateDocument(
     file: Express.Multer.File,
+    actorId: string,
     meta: UploadParseDto = {},
   ) {
     if (!file?.buffer?.length) {
@@ -502,18 +508,19 @@ export class DocumentService {
 
     const title = titleFromFilename(originalFilename);
 
-    const created = await this.create({
-      title,
-      content: parsedContent,
-      categoryId: meta.categoryId,
-      teamId: meta.teamId,
-      authorId: meta.authorId,
-      tags: meta.tags,
-      remark: meta.remark,
-      createBy: meta.createBy,
-      isPublic: meta.isPublic,
-      status: DocumentStatus.Draft,
-    });
+    const created = await this.create(
+      {
+        title,
+        content: parsedContent,
+        categoryId: meta.categoryId,
+        teamId: meta.teamId,
+        tags: meta.tags,
+        remark: meta.remark,
+        isPublic: meta.isPublic,
+        status: DocumentStatus.Draft,
+      },
+      actorId,
+    );
 
     const previewLen = Math.min(200, parsedContent.length);
     const result = {

@@ -90,18 +90,22 @@ export class DocumentReviewService {
     return saved;
   }
 
-  /** 审核通过 → Published + 重建索引 */
+  /**
+   * 审核通过 → Published + 重建索引
+   *
+   * 审核人身份由控制器从 JWT 取，不接受请求体传入。
+   */
   async approveReview(
     reviewId: string,
-    reviewerId?: string,
-    reviewerName?: string,
+    reviewerId: string,
+    reviewerName: string,
     reviewComment?: string,
   ): Promise<DocumentEntity> {
     const review = await this.findPendingReviewOrThrow(reviewId);
 
     review.reviewResult = ReviewResult.Approved;
-    review.reviewerId = reviewerId ?? null;
-    review.reviewerName = reviewerName ?? '审核员';
+    review.reviewerId = reviewerId;
+    review.reviewerName = reviewerName;
     review.reviewComment = reviewComment ?? null;
     review.reviewedAt = new Date();
     await this.em.save(review);
@@ -118,12 +122,16 @@ export class DocumentReviewService {
     return saved;
   }
 
-  /** 审核驳回 → Draft */
+  /**
+   * 审核驳回 → Draft
+   *
+   * 参数顺序与 approveReview 保持一致：审核人身份由控制器从 JWT 取。
+   */
   async rejectReview(
     reviewId: string,
+    reviewerId: string,
+    reviewerName: string,
     reviewComment: string,
-    reviewerId?: string,
-    reviewerName?: string,
   ): Promise<DocumentEntity> {
     if (!reviewComment?.trim()) {
       throw new BadRequestException('驳回意见不能为空');
@@ -132,8 +140,8 @@ export class DocumentReviewService {
     const review = await this.findPendingReviewOrThrow(reviewId);
 
     review.reviewResult = ReviewResult.Rejected;
-    review.reviewerId = reviewerId ?? null;
-    review.reviewerName = reviewerName ?? '审核员';
+    review.reviewerId = reviewerId;
+    review.reviewerName = reviewerName;
     review.reviewComment = reviewComment.trim();
     review.reviewedAt = new Date();
     await this.em.save(review);

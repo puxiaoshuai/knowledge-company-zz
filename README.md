@@ -106,6 +106,24 @@
 
 **可靠性约定**：MQ 投递失败只记日志、**不回滚已发布状态**；ES 不可用时跳过索引写入并告警，不阻断主流程。一次发布全链路共享同一个 `traceId`，grep 即可还原完整路径。
 
+### 4. 鉴权与令牌失效（`/auth`）
+
+双令牌：access（默认 2h，不落库）+ refresh（默认 7d，落 `kh_refresh_token`，只存 SHA-256）。两个 secret 必须不同 —— access 冒用 refresh 会被两处拦下（secret 不符 + 载荷 `type` 不符）。
+
+access token 无状态、**签发后在过期前无法单独撤销**，因此「登出 / 禁用 / 强制下线」统一走 `kh_user.token_version`：签发时把当前值写进载荷，guard 每次请求与库里比对一次（主键查询，约 0.1ms）。
+
+| 动作 | refresh 令牌 | access 令牌 |
+| --- | --- | --- |
+| `POST /auth/logout`（默认，单设备） | 吊销当前这条 | **立即失效**（版本号 +1） |
+| `POST /auth/logout` `allDevices: true` | 吊销该用户全部 | **立即失效**（版本号 +1） |
+| 改库 `status = 0` | 不变 | **立即失效**（每次比对状态） |
+| 改库 `token_version = token_version + 1` | 不变 | **立即失效** |
+| 检出 refresh 令牌复用 | 吊销该用户全部 | **立即失效** |
+
+> **失效粒度是「用户」而非「设备」**：一台设备登出会让该用户**其他设备**的 access token 一起被拒。但它们没被吊销 refresh 令牌，前端在 401 时用 refresh 换新令牌即可无感恢复 —— 所以**前端必须实现「401 → 用 refreshToken 换新令牌后重试」**，否则多设备体验会退化成「一处登出、处处掉线」。
+
+> **禁用后重新启用，旧令牌会复活**：禁用只比对 `status`、不动版本号，所以 `status` 改回 `1` 之后原先那枚 access token 又可用。若要求「重新启用必须重新登录」（如离职复职），禁用时连同自增：`UPDATE kh_user SET status = 0, token_version = token_version + 1 WHERE id = ?`。
+
 ---
 
 ## 当前进度
@@ -120,6 +138,7 @@
 - [x] 分块 + 向量化 → ES `kh_chunk`（dense_vector, cosine）
 - [x] 文档快照 → ES `kh_document` 全文索引（**仅写入侧**）
 - [x] 删除 / 下架时同步清理两侧 ES 索引
+- [x] 用户 / 鉴权 / 权限体系（JWT 双令牌 + 全局默认拒绝守卫 + `@Roles` 角色校验 + `token_version` 即时失效）
 - [x] 雪花 ID 生成、BIGINT 序列化转换、traceId 链路日志
 
 ### 🚧 待办
@@ -128,7 +147,9 @@
 - [ ] 向量检索 / 混合检索（kNN、BM25 + kNN 融合排序）
 - [ ] 分块实体关系抽取，构建知识图谱
 - [ ] RAG 问答链路（召回 + LLM 生成 + 引用溯源）
-- [ ] 用户 / 鉴权 / 权限体系
+- [ ] 文档级权限：已登录用户目前可改任意文档，尚无「只能改自己的」归属校验
+- [ ] 用户管理接口（改密 / 禁用 / 分配角色），当前只能直接改库
+- [ ] `kh_refresh_token` 过期行清理任务
 - [ ] 单元测试与 e2e 测试（当前仅脚手架自带的 1 个 spec）
 
 ### ⚠️ 已知缺口
@@ -136,6 +157,11 @@
 - **全文搜索目前只有索引写入，没有查询接口**。`SearchIndexService` 仅提供 `indexDocument` / `deleteDocument`，`kh_document` 写入后尚未被任何接口读取。
 - `kh_document` 与 `kh_chunk` 的 mapping 均**未指定 IK 分析器**（`content`/`title` 使用默认 `standard`）。IK 插件已内置到 ES 镜像，但中文分词效果要在 mapping 里显式配置 `analyzer: ik_max_word` / `search_analyzer: ik_smart` 才能生效。
 - 向量块同样**只写不读**，尚无 kNN 检索入口。
+- **角色变更最长 2h 生效**：角色内嵌在 JWT 载荷里，guard 只比对账号状态与令牌版本号、**不重取角色**；用户刷新令牌时会重新取最新角色，可提前生效。要即时生效得把角色移出 JWT 或单独做版本号。
+- **guard 每请求多一次主键查询**：`verifyAccessToken` 为比对 `token_version` / `status` 会查一次 `kh_user`。当前量级可忽略，若日后成为瓶颈可在该层加进程内短 TTL 缓存，代价是失效有秒级延迟。
+- `src/app.module.ts` 读的是 `MONGO_URI`，而 `.env` 定义的是 `MONGODB_URI`，两者对不上 —— 实际一直静默使用代码里的硬编码默认值。改 Mongo 连接地址时要注意。
+- `vitest.config.ts` / `vitest.config.e2e.ts` 是**失效配置**：vitest 既非项目依赖也未安装，实际测试运行器是 jest。`test/app.e2e-spec.ts` 未被 `pnpm test` 覆盖（jest `rootDir` 为 `src`），且 `test:e2e` 指向不存在的 `test/jest-e2e.json`。
+- `src/app.controller.spec.ts` 用 `.js` 后缀导入（`./app.controller.js`），jest 没有配 `moduleNameMapper` 去后缀，**该 spec 当前无法运行**。
 
 ---
 
@@ -192,10 +218,23 @@ OPENAI_API_KEY=<your-api-key>          # 或 DASHSCOPE_API_KEY / EMBEDDING_API_K
 # Elasticsearch
 ELASTICSEARCH_ENABLED=true
 ELASTICSEARCH_NODE=http://localhost:9200
+
+# JWT 鉴权（两个 secret 必须不同，否则 access 令牌可当 refresh 用）
+JWT_ACCESS_SECRET=<随机 32 字节 hex>
+JWT_ACCESS_EXPIRES_IN=2h
+JWT_REFRESH_SECRET=<另一个随机 32 字节 hex>
+JWT_REFRESH_EXPIRES_IN=7d
 ```
 
 > `EMBEDDING_API_KEY` / `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` 三者任选其一即可。
 > 三个开关（`RUSTFS_ENABLED` / `RABBITMQ_ENABLED` / `ELASTICSEARCH_ENABLED`）置 `false` 可跳过对应外部依赖，便于本地最小化启动。
+> JWT secret 生成方式：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`。留空或沿用 `.env.example` 里的占位值会导致**服务启动失败**（故意如此，避免用弱密钥上线）。
+
+> ⚠️ **`init.sql` 只在 PostgreSQL 数据目录为空时执行一次。** 如果 `volumes/postgres` 已存在（即之前起过一次），新增的表**不会**被自动创建。手动补灌（脚本幂等，可重复执行）：
+>
+> ```bash
+> docker exec -i knowledge_hub_postgres psql -U user -d knowledge_hub < init-scripts/postgresql/init.sql
+> ```
 
 ### 3. 启动服务
 
@@ -207,19 +246,62 @@ pnpm build && pnpm start:prod   # 生产构建
 
 服务默认监听 `http://localhost:3000`。
 
+只有 `GET /` 是公开的，其余接口都要先登录拿令牌：
+
+```bash
+# 登录并取出 accessToken（测试账号 admin / reviewer / user，密码均为 123456）
+AT=$(curl -s -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"123456"}' \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).accessToken))')
+
+curl http://localhost:3000/documents -H "Authorization: Bearer $AT"
+```
+
 ---
 
 ## API 一览
 
+> 除 `/` 与 `/auth/login|register|refresh|logout` 外，**所有接口都需要 `Authorization: Bearer <accessToken>`**。完整字段说明见 [`接口文档.md`](./接口文档.md)。
+
+**鉴权**
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/documents` | 创建文档（直接提交 Markdown 正文） |
-| `POST` | `/documents/upload/parse` | 上传文件并解析为 Markdown，创建草稿（form-data 字段名 `file`） |
-| `GET` | `/documents` | 分页查询文档列表（仅元数据，支持标题 / 分类 / 团队 / 作者 / 状态筛选） |
-| `GET` | `/documents/:id` | 查询文档详情（含正文） |
-| `PATCH` | `/documents/:id` | 更新文档 |
-| `DELETE` | `/documents/:id` | 软删除文档 |
-| `PUT` | `/documents/:id/publish` | 发布文档，异步触发索引构建 |
+| `POST` | `/auth/register` | 注册，返回令牌，默认授予 `ROLE_USER` |
+| `POST` | `/auth/login` | 登录，返回 access + refresh 令牌 |
+| `POST` | `/auth/refresh` | 刷新令牌（轮换，旧 refresh 立即失效） |
+| `POST` | `/auth/logout` | 登出，吊销 refresh 令牌（幂等） |
+| `GET` | `/auth/profile` | 当前登录用户信息 |
+
+**文档**
+
+| 方法 | 路径 | 所需角色 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/` | 公开 | 健康检查 |
+| `POST` | `/documents` | 登录 | 创建文档（直接提交 Markdown 正文） |
+| `POST` | `/documents/upload/parse` | 登录 | 上传文件并解析为 Markdown，创建草稿（form-data 字段名 `file`） |
+| `GET` | `/documents` | 登录 | 分页查询文档列表（仅元数据，支持标题 / 分类 / 团队 / 作者 / 状态筛选） |
+| `GET` | `/documents/:id` | 登录 | 查询文档详情（含正文） |
+| `PATCH` | `/documents/:id` | 登录 | 更新文档 |
+| `DELETE` | `/documents/:id` | `ADMIN` | 软删除文档 |
+| `PUT` | `/documents/:id/publish` | 登录 | 发布文档（开启审核时进入待审），异步触发索引构建 |
+| `PUT` | `/documents/:id/archive` | `ADMIN` | 归档文档，清空索引 |
+| `PUT` | `/documents/:id/save-draft` | 登录 | 下架编辑（已发布 → 草稿） |
+
+**审核**
+
+| 方法 | 路径 | 所需角色 | 说明 |
+| --- | --- | --- | --- |
+| `POST` | `/documents/:id/reviews/submit` | 登录 | 单独提交审核 |
+| `GET` | `/documents/:id/reviews/current` | 登录 | 该文档当前待审记录 |
+| `GET` | `/documents/:id/reviews/history` | 登录 | 该文档审核历史 |
+| `GET` | `/documents/reviews/tasks` | `ADMIN` / `REVIEWER` | 审核待办列表 |
+| `GET` | `/documents/reviews/tasks/pending-count` | `ADMIN` / `REVIEWER` | 待审核数量（导航角标） |
+| `POST` | `/documents/reviews/tasks/:taskId/approve` | `ADMIN` / `REVIEWER` | 审核通过 |
+| `POST` | `/documents/reviews/tasks/:taskId/reject` | `ADMIN` / `REVIEWER` | 审核驳回 |
+
+**测试账号**（密码均为 `123456`）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。
 
 ---
 
@@ -227,6 +309,17 @@ pnpm build && pnpm start:prod   # 生产构建
 
 ```
 src/
+├── auth/                       # 用户鉴权
+│   ├── constants/              # 角色编码、元数据键
+│   ├── decorators/             # @Public / @Roles / @CurrentUser
+│   ├── dto/                    # 注册 / 登录 / 刷新 / 登出入参
+│   ├── entities/               # kh_user / kh_role / kh_user_role / kh_refresh_token
+│   ├── guards/                 # JwtAuthGuard（全局默认拒绝）、RolesGuard
+│   ├── types/                  # JWT 载荷、当前用户、令牌对
+│   ├── auth.controller.ts
+│   ├── auth.module.ts          # 全局 APP_GUARD 在此注册
+│   ├── auth.service.ts         # 注册 / 登录 / 刷新 / 登出 / 当前用户
+│   └── token.service.ts        # 令牌签发、校验、轮换、吊销
 ├── common/                     # 雪花 ID、traceId、BIGINT 序列化转换
 ├── document/                   # 文档领域
 │   ├── dto/                    # 入参校验（DTO）
@@ -258,3 +351,6 @@ src/
 - **软删除**：Postgres 与 Mongo 两侧 `deleted` 同步置位，查询默认过滤
 - **双写一致性**：正文先落 Mongo，再落 Postgres；Postgres 失败回滚 Mongo，反之不做补偿
 - **降级优先**：外部依赖（ES / MQ / RustFS）不可用时不阻断主流程，记日志 + 告警降级
+- **鉴权默认拒绝**：全局 `JwtAuthGuard` 要求所有路由携带有效 access token，用 `@Public()` 开白名单。**新增接口若忘记标注，会直接 401**
+- **身份只从 JWT 取**：`authorId` / `createBy` / `updateBy` / `reviewerId` / `reviewerName` 一律由服务端从令牌解析，**不接受请求体传入**（旧字段保留仅为兼容，已停止生效）
+- **绝不展开实体**：响应必须显式挑字段构造（见 `AuthService.toAuthUser`），不允许 `{ ...user }`，否则 `password` 会被序列化出去

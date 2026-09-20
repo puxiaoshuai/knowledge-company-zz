@@ -26,7 +26,10 @@ export class CreateDocumentDto {
   @IsString()
   teamId?: string;
 
-  /** 作者 ID */
+  /**
+   * @deprecated 已改从 JWT 取当前用户，此字段不再生效。
+   * 保留仅为兼容老前端 —— 全局 ValidationPipe 开了 forbidNonWhitelisted，删掉会让旧请求直接 400。
+   */
   @IsOptional()
   @IsString()
   authorId?: string;
@@ -56,7 +59,7 @@ export class CreateDocumentDto {
   @IsBoolean()
   isPublic?: boolean;
 
-  /** 创建人 ID */
+  /** @deprecated 同上，作者 / 创建人已改从 JWT 取当前用户 */
   @IsOptional()
   @IsString()
   createBy?: string;

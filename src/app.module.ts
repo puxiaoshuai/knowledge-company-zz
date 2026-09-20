@@ -4,6 +4,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
+import { RefreshTokenEntity } from './auth/entities/refresh-token.entity';
+import { RoleEntity } from './auth/entities/role.entity';
+import { UserRoleEntity } from './auth/entities/user-role.entity';
+import { UserEntity } from './auth/entities/user.entity';
 import { DocumentModule } from './document/document.module';
 import { DocumentEntity } from './document/entities/document.entity';
 import { DocumentReviewEntity } from './document/entities/document-review.entity';
@@ -26,7 +31,14 @@ import { StorageModule } from './storage/storage.module';
         username: config.get<string>('POSTGRES_USER', 'user'),
         password: config.get<string>('POSTGRES_PASSWORD', '123456'),
         database: config.get<string>('POSTGRES_DB', 'knowledge_hub'),
-        entities: [DocumentEntity, DocumentReviewEntity],
+        entities: [
+          DocumentEntity,
+          DocumentReviewEntity,
+          UserEntity,
+          RoleEntity,
+          UserRoleEntity,
+          RefreshTokenEntity,
+        ],
         synchronize: false,
       }),
     }),
@@ -40,6 +52,7 @@ import { StorageModule } from './storage/storage.module';
       }),
     }),
     DocumentModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
