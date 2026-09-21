@@ -116,3 +116,54 @@ export const AuthMessage = {
   /** 200：修改成功。不签发令牌，用户需用新密码重新登录 */
   PasswordChanged: '密码已修改，请用新密码重新登录',
 } as const;
+
+
+/**
+ * 运行时校验用的权限编码（kh_permission.permission_code），与 init.sql 种子对应。
+ *
+ * 注册到这里的意义是编译期拼写检查：@RequirePermissions() 的参数类型就是
+ * 下面的派生联合，写错码在 tsc 阶段报错，而不是上线后静默 403。
+ * 运行时真正的判定依据仍是数据库（见 PermissionResolverService），
+ * 这里只是源码侧的镜像 —— 新增码时记得同步种子数据。
+ */
+export const PermissionCode = {
+  // ---- 文档模块 ----
+  DocumentList: 'document:list',
+  DocumentCreate: 'document:create',
+  DocumentEdit: 'document:edit',
+  DocumentDelete: 'document:delete',
+  DocumentReview: 'document:review',
+  /** 预留：分类 / 标签 / 版本管理，种子尚未落库 */
+  DocumentCategory: 'document:category',
+  DocumentCategoryQuery: 'document:category:query',
+  DocumentTag: 'document:tag',
+  DocumentVersion: 'document:version',
+
+  // ---- 搜索 ----
+  Search: 'search',
+
+  // ---- 系统管理 ----
+  SystemUser: 'system:user',
+  SystemRole: 'system:role',
+  SystemPermission: 'system:permission',
+  SystemPermissionCreate: 'system:permission:create',
+  SystemPermissionEdit: 'system:permission:edit',
+  SystemPermissionDelete: 'system:permission:delete',
+  SystemTeam: 'system:team',
+  /** 预留：统计 / 设置，种子尚未落库 */
+  SystemStatistics: 'system:statistics',
+  SystemSettings: 'system:settings',
+} as const;
+
+/** 权限码字面量联合，@RequirePermissions() 的参数类型（同 RoleCode 的做法） */
+export type PermissionCode = (typeof PermissionCode)[keyof typeof PermissionCode];
+
+/**
+ * 管理员自动拥有的操作权限 = 全部已注册权限码。
+ *
+ * 与守卫里「ROLE_ADMIN 对任意权限码隐式全通过」、/permissions/me 给 admin
+ * 全量启用权限是同一语义，因此从 PermissionCode 派生而非手抄一份清单 ——
+ * 新增码自动进入管理员授权面，不会出现两份清单各自漂移。
+ */
+export const ADMIN_OPERATION_PERMISSIONS: readonly PermissionCode[] =
+  Object.values(PermissionCode);

@@ -51,6 +51,12 @@ export class SearchIndexService implements OnModuleInit, OnModuleDestroy {
     this.esEnabled =
       this.config.get<string>('ELASTICSEARCH_ENABLED', 'true') !== 'false';
   }
+  /** 中文：写入细切（ik_max_word），检索粗切（ik_smart） */
+  private readonly ikText = {
+    type: 'text' as const,
+    analyzer: 'ik_max_word',
+    search_analyzer: 'ik_smart',
+  };
 
   async onModuleInit() {
     if (!this.esEnabled) {
@@ -155,23 +161,28 @@ export class SearchIndexService implements OnModuleInit, OnModuleDestroy {
     }
 
     const keyword = params.keyword?.trim();
-    const query: Record<string, unknown> = keyword
+    const query: Record<string, unknown> = filters.length > 0
       ? {
-          bool: {
-            must: [
-              {
-                multi_match: {
-                  query: keyword,
-                  fields: ['title^3', 'summary^2', 'content'],
-                },
+        bool: {
+          must: [
+            {
+              multi_match: {
+                query: keyword,
+                fields: ['title^3', 'summary^2', 'content'],
+                analyzer: 'ik_smart',
               },
-            ],
-            filter: filters,
-          },
-        }
-      : filters.length
-        ? { bool: { filter: filters } }
-        : { match_all: {} };
+            },
+          ],
+          filter: filters,
+        },
+      }
+      : {
+        multi_match: {
+          query: keyword,
+          fields: ['title^3', 'summary^2', 'content'],
+          analyzer: 'ik_smart',
+        },
+      };
 
     try {
       const response = await this.es.search({
@@ -216,9 +227,9 @@ export class SearchIndexService implements OnModuleInit, OnModuleDestroy {
         mappings: {
           properties: {
             id: { type: 'keyword' },
-            title: { type: 'text' },
-            summary: { type: 'text' },
-            content: { type: 'text' },
+            title: this.ikText,
+            summary: this.ikText,
+            content: this.ikText,
             tags: { type: 'keyword' },
             status: { type: 'integer' },
             categoryId: { type: 'keyword' },
@@ -227,7 +238,7 @@ export class SearchIndexService implements OnModuleInit, OnModuleDestroy {
           },
         },
       });
-      this.logger.log(`已创建 ES 索引：${ES_INDEX}`);
+      this.logger.log(`已创建 ES 索引：${ES_INDEX}（ik_max_word / ik_smart）`);
     }
   }
 }

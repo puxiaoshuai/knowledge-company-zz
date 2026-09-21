@@ -9,6 +9,7 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
+import { PermissionCode } from '../auth/constants/auth.constant.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
@@ -36,7 +37,7 @@ import { PermissionService } from './permission.service.js';
  * 顺序约束沿用 document.controller.ts 的惯例并注释在先。
  */
 @Roles(RoleCode.Admin)
-@RequirePermissions('system:permission')
+@RequirePermissions(PermissionCode.SystemPermission)
 @Controller('permissions')
 export class PermissionController {
   constructor(private readonly permissionService: PermissionService) {}
@@ -69,7 +70,7 @@ export class PermissionController {
    * 新增权限。方法级 `system:permission:create` **覆盖**类级的
    * `system:permission` —— 要求按钮级权限而不是看一眼菜单的权限。
    */
-  @RequirePermissions('system:permission:create')
+  @RequirePermissions(PermissionCode.SystemPermissionCreate)
   @Post()
   create(
     @Body() dto: CreatePermissionDto,
@@ -110,7 +111,7 @@ export class PermissionController {
   }
 
   /** 修改权限（改 parentId 防环、改 code 查重） */
-  @RequirePermissions('system:permission:edit')
+  @RequirePermissions(PermissionCode.SystemPermissionEdit)
   @Patch(':id')
   update(
     @Param('id') id: string,
@@ -124,7 +125,7 @@ export class PermissionController {
    * 软删除权限。有未删除子权限时 400；
    * 同事务清理角色 / 用户授权引用（卫生措施，防授权回显出现僵尸 id）。
    */
-  @RequirePermissions('system:permission:delete')
+  @RequirePermissions(PermissionCode.SystemPermissionDelete)
   @Delete(':id')
   remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.permissionService.remove(id, user.id);

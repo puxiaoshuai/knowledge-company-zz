@@ -8,6 +8,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { PermissionCode } from '../auth/constants/auth.constant.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
@@ -33,7 +34,7 @@ import { UserService } from './user.service.js';
  * 删除自己、禁用自己这类判定全靠它。
  */
 @Roles(RoleCode.Admin)
-@RequirePermissions('system:user')
+@RequirePermissions(PermissionCode.SystemUser)
 @Controller('users')
 export class UserController {
   constructor(private readonly userService: UserService) {}

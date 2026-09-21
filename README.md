@@ -512,6 +512,14 @@ curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
 | --- | --- | --- | --- |
 | `GET` | `/search/documents` | 登录 | 关键词全文检索（ES `kh_document`；标题/摘要/正文加权匹配，命中字段 `<em>` 高亮，支持分类/作者过滤与分页；响应列表字段为 `list`） |
 
+**图谱**
+
+| 方法 | 路径 | 所需角色 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/graph/search` | 登录 | 图谱关键词检索（Neo4j；跨实体/文档/块节点 CONTAINS 匹配，返回裸数组） |
+| `GET` | `/graph/nodes` | 登录 | 实体节点列表（`type` 过滤，limit 实际上限 500；与 edges 拼图可视化） |
+| `GET` | `/graph/edges` | 登录 | 实体间 `RELATED_TO` 边列表（`source`/`target` 为实体名，对应 nodes 的 `name`） |
+
 **测试账号**（密码均为 `123456`，邮箱已验证，可直接登录）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。`user` 的 `GET /permissions/me` 返回受限菜单（种子只授了部分权限），`admin` 返回全量 —— 可用于前端权限联调对照。
 
 ---

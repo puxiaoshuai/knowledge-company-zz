@@ -9,6 +9,7 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
+import { PermissionCode } from '../auth/constants/auth.constant.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
@@ -34,7 +35,7 @@ import { TeamService } from './team.service.js';
  * （同 user.controller.ts 里 roles 的处理）。
  */
 @Roles(RoleCode.Admin)
-@RequirePermissions('system:team')
+@RequirePermissions(PermissionCode.SystemTeam)
 @Controller('teams')
 export class TeamController {
   constructor(private readonly teamService: TeamService) {}
