@@ -6,8 +6,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectEntityManager } from '@nestjs/typeorm';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { EntityManager, IsNull } from 'typeorm';
 import { nextSnowflakeId } from '../common/snowflake-id';
 import { DocumentPipelinePublisher } from '../mq/document-pipeline.publisher';
@@ -17,10 +15,6 @@ import {
   DocumentReviewEntity,
   ReviewResult,
 } from './entities/document-review.entity';
-import {
-  DocumentContent,
-  DocumentContentDocument,
-} from './schemas/document-content.schema';
 import { QueryReviewTasksDto } from './dto/review.dto';
 
 /**
@@ -36,8 +30,6 @@ export class DocumentReviewService {
   constructor(
     @InjectEntityManager()
     private readonly em: EntityManager,
-    @InjectModel(DocumentContent.name)
-    private readonly contentModel: Model<DocumentContentDocument>,
     private readonly pipelinePublisher: DocumentPipelinePublisher,
     private readonly config: ConfigService,
   ) {}
@@ -115,8 +107,7 @@ export class DocumentReviewService {
     doc.publishTime = new Date();
     const saved = await this.em.save(doc);
 
-    const content = await this.loadContent(doc.contentId);
-    await this.safePublish(saved, content);
+    await this.safePublish(saved);
 
     this.logger.log(`审核通过：reviewId=${reviewId}, documentId=${doc.id}`);
     return saved;
@@ -225,16 +216,9 @@ export class DocumentReviewService {
     return doc;
   }
 
-  private async loadContent(contentId: string): Promise<string> {
-    const contentDoc = await this.contentModel
-      .findOne({ _id: contentId, deleted: false })
-      .lean();
-    return contentDoc?.content ?? '';
-  }
-
-  private async safePublish(doc: DocumentEntity, content: string) {
+  private async safePublish(doc: DocumentEntity) {
     try {
-      await this.pipelinePublisher.afterPublish(doc, content);
+      await this.pipelinePublisher.afterPublish(doc);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(

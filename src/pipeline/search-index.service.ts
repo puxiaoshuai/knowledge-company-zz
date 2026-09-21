@@ -5,6 +5,33 @@ import { ConfigService } from '@nestjs/config';
 /** ES 文档级全文检索索引名 */
 const ES_INDEX = 'kh_document';
 
+/** 关键词检索参数 */
+export interface SearchParams {
+  /** 关键词，匹配标题/摘要/正文；为空则只按过滤条件分页 */
+  keyword?: string;
+  /** 页码，从 1 开始 */
+  page?: number;
+  /** 每页条数，1~100 */
+  pageSize?: number;
+  /** 分类 ID 过滤 */
+  categoryId?: string;
+  /** 作者 ID 过滤 */
+  authorId?: string;
+}
+
+/** 检索结果条目：索引字段 + 高亮片段 */
+export interface SearchHitItem extends Record<string, unknown> {
+  highlight?: Record<string, string[]>;
+}
+
+/** 关键词检索结果 */
+export interface SearchResult {
+  total: number;
+  page: number;
+  pageSize: number;
+  list: SearchHitItem[];
+}
+
 /**
  * 文档级全文搜索索引
  *
@@ -53,7 +80,7 @@ export class SearchIndexService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Upsert 一篇文档的搜索记录。
-   * @param doc 字段约定见 DocumentPipelinePublisher.buildSearchIndexData
+   * @param doc 字段约定见 PipelineOrchestrator.toSearchDoc
    */
   async indexDocument(doc: Record<string, unknown>) {
     if (!this.es) {
@@ -100,6 +127,83 @@ export class SearchIndexService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log(`搜索索引已删除：documentId=${documentId}`);
+  }
+
+  /**
+   * 关键词检索文档。
+   *
+   * <p>keyword 走 multi_match（标题/摘要/正文加权），categoryId / authorId 走 term 精确过滤；
+   * 命中字段以 &lt;em&gt; 标签高亮返回（标题返回整段，摘要/正文返回片段）。
+   * ES 不可用或查询失败时返回空结果并打日志。</p>
+   */
+  async searchDocuments(params: SearchParams = {}): Promise<SearchResult> {
+    const page = Math.max(1, Math.floor(params.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Math.floor(params.pageSize ?? 10)));
+    const result: SearchResult = { total: 0, page, pageSize, list: [] };
+
+    if (!this.es) {
+      this.logger.warn('跳过关键词检索（ES 不可用）');
+      return result;
+    }
+
+    const filters: Record<string, unknown>[] = [];
+    if (params.categoryId) {
+      filters.push({ term: { categoryId: params.categoryId } });
+    }
+    if (params.authorId) {
+      filters.push({ term: { authorId: params.authorId } });
+    }
+
+    const keyword = params.keyword?.trim();
+    const query: Record<string, unknown> = keyword
+      ? {
+          bool: {
+            must: [
+              {
+                multi_match: {
+                  query: keyword,
+                  fields: ['title^3', 'summary^2', 'content'],
+                },
+              },
+            ],
+            filter: filters,
+          },
+        }
+      : filters.length
+        ? { bool: { filter: filters } }
+        : { match_all: {} };
+
+    try {
+      const response = await this.es.search({
+        index: ES_INDEX,
+        from: (page - 1) * pageSize,
+        size: pageSize,
+        query,
+        highlight: {
+          pre_tags: ['<em>'],
+          post_tags: ['</em>'],
+          fields: {
+            title: { number_of_fragments: 0 },
+            summary: { fragment_size: 100, number_of_fragments: 2 },
+            content: { fragment_size: 100, number_of_fragments: 2 },
+          },
+        },
+      });
+
+      result.total =
+        typeof response.hits.total === 'number'
+          ? response.hits.total
+          : (response.hits.total?.value ?? 0);
+      result.list = response.hits.hits.map((hit) => ({
+        ...(hit._source as Record<string, unknown>),
+        highlight: hit.highlight,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`关键词检索失败：${message}`);
+    }
+
+    return result;
   }
 
   /** 索引不存在则创建基础 mapping（text + keyword） */

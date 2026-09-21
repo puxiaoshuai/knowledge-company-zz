@@ -22,7 +22,7 @@ import { PipelineDocument } from './types/pipeline.types';
  * 发布后知识管线编排器
  *
  * <p>RAG：分块 → Embedding → ES kh_chunk</p>
- * <p>Search：整篇快照 → ES kh_document</p>
+ * <p>Search：按 ID 加载文档 → ES kh_document</p>
  * <p>KG：分块 → 抽实体关系 → Neo4j</p>
  *
  * <p>由 {@link DocumentPipelineConsumer} 在消费到 MQ 消息后调用；</p>
@@ -77,27 +77,24 @@ export class PipelineOrchestrator {
 
   /**
    * 处理 Search 索引消息。
-   * INDEX：消息内已带文档快照，直接写入 ES kh_document。
+   * INDEX：按 documentId 加载元数据 + Mongo 正文 → 写入 ES kh_document。
    * DELETE：按 documentId 删除。
    */
-  async handleSearchIndex(
-    type: string,
-    documentId: string,
-    document?: Record<string, unknown>,
-  ) {
+  async handleSearchIndex(type: string, documentId: string) {
     if (type === 'DELETE') {
       await this.searchIndexService.deleteDocument(documentId);
       return;
     }
 
     if (type === 'INDEX') {
-      if (!document) {
+      const [doc] = await this.loadDocumentsByIds([documentId]);
+      if (!doc) {
         this.logger.warn(
-          `Search INDEX 消息缺少 document 快照：documentId=${documentId}`,
+          `Search INDEX 消息对应的文档不存在或已删除：documentId=${documentId}`,
         );
         return;
       }
-      await this.searchIndexService.indexDocument(document);
+      await this.searchIndexService.indexDocument(this.toSearchDoc(doc));
       return;
     }
 
@@ -208,6 +205,33 @@ export class PipelineOrchestrator {
       result.push(this.toPipelineDoc(doc, contentDoc?.content ?? ''));
     }
     return result;
+  }
+
+  /** PipelineDocument → ES kh_document 快照；content 只截前 1000 字，控制索引体积 */
+  private toSearchDoc(doc: PipelineDocument): Record<string, unknown> {
+    const contentPreview = doc.content
+      ? doc.content.length > 1000
+        ? doc.content.substring(0, 1000)
+        : doc.content
+      : null;
+
+    return {
+      id: doc.id,
+      title: doc.title,
+      summary: doc.summary ?? null,
+      content: contentPreview,
+      categoryId: doc.categoryId ?? null,
+      tags: doc.tags ?? null,
+      status: doc.status,
+      isPublic: doc.isPublic,
+      viewCount: doc.viewCount,
+      likeCount: doc.likeCount,
+      commentCount: doc.commentCount,
+      authorId: doc.authorId ?? null,
+      publishTime: this.toIsoDate(doc.publishTime),
+      createdAt: this.toIsoDate(doc.createdAt),
+      updatedAt: this.toIsoDate(doc.updatedAt),
+    };
   }
 
   /** Postgres 实体 + Mongo 正文 → 管线统一 DTO */

@@ -100,7 +100,7 @@
 | --- | --- | --- | --- |
 | RAG 重建 | `rag.reindex.exchange` / `rag.reindex.by_ids` | 清旧块 → Markdown 感知分块 → 批量 Embedding | ES `kh_chunk` |
 | 向量清理 | `rag.reindex.exchange` / `rag.reindex.delete` | 按 `document_id` 删除全部块 | ES `kh_chunk` |
-| 全文索引 | `search.index.exchange` / `search.index.document` | 消息自带文档快照，直接写入 | ES `kh_document` |
+| 全文索引 | `search.index.exchange` / `search.index.document` | 消息只带 `documentId`，消费者查库加载快照后写入 | ES `kh_document` |
 | 索引清理 | `search.index.exchange` / `search.index.delete` | 按文档 ID 删除 | ES `kh_document` |
 
 **分块策略**：LangChain `RecursiveCharacterTextSplitter`，分隔符在 markdown 内置集合前补 `\n# ` 以支持一级标题切分；默认 `512 token / 64 token overlap`，按 `1 token ≈ 2 字符` 换算。块内首个 ATX 标题作为 `heading`，跨块继承并在无标题的后续块前缀补全，保证召回时带上下文。
@@ -505,6 +505,12 @@ curl "http://localhost:3000/auth/verify-email?token=<日志里的 token>"
 | `GET` | `/documents/reviews/tasks/pending-count` | `ADMIN` / `REVIEWER` | 待审核数量（导航角标） |
 | `POST` | `/documents/reviews/tasks/:taskId/approve` | `ADMIN` / `REVIEWER` | 审核通过 |
 | `POST` | `/documents/reviews/tasks/:taskId/reject` | `ADMIN` / `REVIEWER` | 审核驳回 |
+
+**搜索**
+
+| 方法 | 路径 | 所需角色 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/search/documents` | 登录 | 关键词全文检索（ES `kh_document`；标题/摘要/正文加权匹配，命中字段 `<em>` 高亮，支持分类/作者过滤与分页；响应列表字段为 `list`） |
 
 **测试账号**（密码均为 `123456`，邮箱已验证，可直接登录）：`admin`（ADMIN + REVIEWER）、`reviewer`（REVIEWER）、`user`（USER）。`user` 的 `GET /permissions/me` 返回受限菜单（种子只授了部分权限），`admin` 返回全量 —— 可用于前端权限联调对照。
 

@@ -16,6 +16,7 @@ import { MailModule } from './mail/mail.module';
 import { MqModule } from './mq/mq.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { RedisModule } from './redis/redis.module';
+import { SearchModule } from './search/search.module';
 import { StorageModule } from './storage/storage.module';
 import { PermissionEntity } from './permission/entities/permission.entity';
 import { RolePermissionEntity } from './permission/entities/role-permission.entity';
@@ -76,6 +77,7 @@ import { UserModule } from './user/user.module';
     // PermissionsGuard 依赖 JwtAuthGuard 先把 request.user 填好（fail-closed）
     PermissionModule,
     TeamModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [AppService],

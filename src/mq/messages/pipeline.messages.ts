@@ -7,15 +7,13 @@ export interface ReindexMessage {
   documentIds?: string[];
 }
 
-/** ES 搜索索引消息（文档侧直接投递快照，供 Search 消费者落库） */
+/** ES 搜索索引消息（消费者按 documentId 查库后写入 / 删除） */
 export type SearchIndexType = 'INDEX' | 'DELETE';
 
 export interface SearchIndexMessage {
   taskId: string;
   type: SearchIndexType;
   documentId: string;
-  /** INDEX 时附带的文档快照；DELETE 时可省略 */
-  document?: Record<string, unknown>;
 }
 
 /** KG 建图 / 删图消息 */
