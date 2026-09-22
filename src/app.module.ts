@@ -27,6 +27,7 @@ import { TeamMemberEntity } from './team/entities/team-member.entity';
 import { TeamModule } from './team/team.module';
 import { UserModule } from './user/user.module';
 import { GraphModule } from './graph/graph.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { GraphModule } from './graph/graph.module';
     TeamModule,
     SearchModule,
     GraphModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [AppService],

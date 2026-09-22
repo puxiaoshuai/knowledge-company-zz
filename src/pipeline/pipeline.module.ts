@@ -29,6 +29,7 @@ import { VectorIndexService } from './vector-index.service';
   ],
   exports: [
     PipelineOrchestrator,
+    EmbeddingService,
     VectorIndexService,
     SearchIndexService,
     GraphBuildService,

@@ -142,6 +142,7 @@ export const PermissionCode = {
   // ---- 搜索 ----
   Search: 'search',
 
+
   // ---- 系统管理 ----
   SystemUser: 'system:user',
   SystemRole: 'system:role',

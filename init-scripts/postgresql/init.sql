@@ -181,6 +181,11 @@ INSERT INTO kh_permission (id, parent_id, permission_name, permission_code, perm
     (4000000000000000015, 4000000000000000002, '文档审核', 'document:review', 2, 5)
 ON CONFLICT (id) DO NOTHING;
 
+-- AI 对话挂在「搜索」菜单下（parent = 4000000000000000003）
+INSERT INTO kh_permission (id, parent_id, permission_name, permission_code, permission_type, sort) VALUES
+    (4000000000000000031, 4000000000000000003, 'AI 对话', 'chat', 2, 1)
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO kh_permission (id, parent_id, permission_name, permission_code, permission_type, menu_url, sort) VALUES
     (4000000000000000021, 4000000000000000005, '用户管理', 'system:user', 1, '/admin/users', 1),
     (4000000000000000022, 4000000000000000005, '角色管理', 'system:role', 1, '/admin/roles', 2),
@@ -202,7 +207,8 @@ INSERT INTO kh_role_permission (id, role_id, permission_id) VALUES
     (4100000000000000005, 2000000000000000003, 4000000000000000011),
     (4100000000000000006, 2000000000000000003, 4000000000000000012),
     (4100000000000000007, 2000000000000000003, 4000000000000000003),
-    (4100000000000000008, 2000000000000000003, 4000000000000000004)
+    (4100000000000000008, 2000000000000000003, 4000000000000000004),
+    (4100000000000000009, 2000000000000000003, 4000000000000000031)
 ON CONFLICT (id) DO NOTHING;
 
 -- ==================== 团队 ====================
