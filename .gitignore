@@ -1,59 +1,36 @@
-# compiled output
-/dist
-/node_modules
-/build
-*.tsbuildinfo
+# 依赖
+node_modules/
 
-# Logs
-logs
+# 环境变量
+.env
+*.local
+
+# 构建产物
+dist/
+dist-ssr/
+
+# 日志
+logs/
 *.log
 npm-debug.log*
-pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 lerna-debug.log*
 
-# OS
-.DS_Store
+# 基础设施数据卷
+volumes/
 
-# Tests
-/coverage
-/.nyc_output
+# 本地初始化脚本
+knowledge-hub-backend/init-scripts/
 
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
+# 编辑器 / IDE
 .vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
 !.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-
-/volumes/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
