@@ -57,7 +57,7 @@ export default function DashboardPage() {
         {can(user, 'document:list') ? (
           <Col span={6}>
             <Card hoverable onClick={() => navigate('/documents')}>
-              <FileTextOutlined style={{ color: '#1677ff', fontSize: 20 }} /> 文档管理
+              <FileTextOutlined style={{ color: '#2ea8ff', fontSize: 20 }} /> 文档管理
             </Card>
           </Col>
         ) : null}
@@ -65,17 +65,17 @@ export default function DashboardPage() {
           <>
             <Col span={6}>
               <Card hoverable onClick={() => navigate('/search')}>
-                <SearchOutlined style={{ color: '#1677ff', fontSize: 20 }} /> 文档搜索
+                <SearchOutlined style={{ color: '#2ea8ff', fontSize: 20 }} /> 文档搜索
               </Card>
             </Col>
             <Col span={6}>
               <Card hoverable onClick={() => navigate('/chat')}>
-                <MessageOutlined style={{ color: '#1677ff', fontSize: 20 }} /> AI 问答
+                <MessageOutlined style={{ color: '#2ea8ff', fontSize: 20 }} /> AI 问答
               </Card>
             </Col>
             <Col span={6}>
               <Card hoverable onClick={() => navigate('/graph')}>
-                <ClusterOutlined style={{ color: '#1677ff', fontSize: 20 }} /> 知识图谱
+                <ClusterOutlined style={{ color: '#2ea8ff', fontSize: 20 }} /> 知识图谱
               </Card>
             </Col>
           </>

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  ApartmentOutlined,
   BellOutlined,
   ClusterOutlined,
   FileTextOutlined,
@@ -16,7 +15,7 @@ import {
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Avatar, Badge, Dropdown, Layout, Menu, Tag, theme } from 'antd'
+import { Avatar, Badge, Dropdown, Layout, Menu, Tag } from 'antd'
 import type { MenuProps } from 'antd'
 import { authApi, teamApi } from '../api'
 import { clearAuth, updateUser, useAuth } from '../auth'
@@ -28,185 +27,167 @@ const { Header, Sider, Content } = Layout
 
 type MenuItem = NonNullable<MenuProps['items']>[number]
 
+/** 路径所属的分组子菜单（文档管理 / 系统管理） */
+function groupOf(pathname: string): string[] {
+  if (pathname.startsWith('/documents') || pathname.startsWith('/admin/reviews')) {
+    return ['nav-documents']
+  }
+  if (pathname.startsWith('/admin')) return ['nav-admin']
+  return []
+}
+
 export default function AppLayout() {
   const user = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
+  const [openKeys, setOpenKeys] = useState<string[]>(groupOf(location.pathname))
   const [myTeams, setMyTeams] = useState<TeamItem[]>([])
-  const {
-    token: { colorBgContainer },
-  } = theme.useToken()
 
   useEffect(() => {
     authApi.me().then(updateUser).catch(() => undefined)
     teamApi.mine().then(setMyTeams).catch(() => undefined)
   }, [])
 
-  const topKey = useMemo(() => {
-    if (location.pathname.startsWith('/documents') || location.pathname.startsWith('/admin/reviews')) {
-      return '/documents'
+  // 页面内跳转（如铃铛进审核工作台）时，确保目标分组子菜单展开
+  useEffect(() => {
+    const group = groupOf(location.pathname)
+    if (group.length) {
+      setOpenKeys((prev) => {
+        const merged = [...new Set([...prev, ...group])]
+        return merged.length === prev.length ? prev : merged
+      })
     }
-    if (location.pathname.startsWith('/search')) return '/search'
-    if (location.pathname.startsWith('/chat')) return '/chat'
-    if (location.pathname.startsWith('/graph')) return '/graph'
-    if (location.pathname.startsWith('/profile')) return '/profile'
-    if (location.pathname.startsWith('/admin')) return '/admin'
-    return '/dashboard'
   }, [location.pathname])
 
-  const topItems = useMemo(() => {
-    const items: MenuItem[] = [
-      { key: '/dashboard', label: '首页大盘', icon: <HomeOutlined /> },
-    ]
-    if (can(user, 'document:list')) {
-      items.push({ key: '/documents', label: '文档管理', icon: <FileTextOutlined /> })
-    }
-    if (can(user, 'search')) {
-      items.push({ key: '/search', label: '文档搜索', icon: <SearchOutlined /> })
-      items.push({ key: '/chat', label: 'AI智能问答', icon: <MessageOutlined /> })
-      items.push({ key: '/graph', label: '知识图谱', icon: <ClusterOutlined /> })
-    }
-    if (can(user, 'profile')) {
-      items.push({ key: '/profile', label: '个人中心', icon: <UserOutlined /> })
-    }
-    if (isAdmin(user)) {
-      items.push({ key: '/admin/users', label: '系统管理', icon: <SettingOutlined /> })
-    }
-    return items
-  }, [user])
+  const sectionTitle = useMemo(() => {
+    const p = location.pathname
+    if (p.startsWith('/admin/reviews')) return '审核工作台'
+    if (p.startsWith('/admin')) return '系统管理'
+    if (p.startsWith('/documents')) return '文档管理'
+    if (p.startsWith('/search')) return '文档搜索'
+    if (p.startsWith('/chat')) return 'AI智能问答'
+    if (p.startsWith('/graph')) return '知识图谱'
+    if (p.startsWith('/profile')) return '个人中心'
+    return '首页大盘'
+  }, [location.pathname])
 
-  const side = useMemo(() => {
-    if (topKey === '/documents') {
-      const items: MenuItem[] = [
+  const selectedKeys = useMemo(() => {
+    const p = location.pathname
+    // 文档详情/编辑页高亮「可见文档」
+    if (/^\/documents\/\d+/.test(p)) return ['/documents']
+    return [p]
+  }, [location.pathname])
+
+  const menuItems = useMemo(() => {
+    const items: MenuItem[] = [{ key: '/dashboard', icon: <HomeOutlined />, label: '首页大盘' }]
+    if (can(user, 'document:list')) {
+      const docs: MenuItem[] = [
         { key: '/documents', icon: <ReadOutlined />, label: '可见文档' },
         { key: '/documents/new', icon: <FileTextOutlined />, label: '新建文档' },
       ]
       if (isReviewer(user)) {
-        items.push({ key: '/admin/reviews', icon: <BellOutlined />, label: '审核工作台' })
+        docs.push({ key: '/admin/reviews', icon: <BellOutlined />, label: '审核工作台' })
       }
-      return { title: '文档管理', items }
+      items.push({ key: 'nav-documents', icon: <FileTextOutlined />, label: '文档管理', children: docs })
     }
-    if (topKey === '/search') {
-      return {
-        title: '文档搜索',
-        items: [{ key: '/search', icon: <SearchOutlined />, label: '全文检索' }],
-      }
+    if (can(user, 'search')) {
+      items.push({ key: '/search', icon: <SearchOutlined />, label: '文档搜索' })
+      items.push({ key: '/chat', icon: <MessageOutlined />, label: 'AI智能问答' })
+      items.push({ key: '/graph', icon: <ClusterOutlined />, label: '知识图谱' })
     }
-    if (topKey === '/chat') {
-      return {
-        title: 'AI智能问答',
-        items: [{ key: '/chat', icon: <MessageOutlined />, label: '知识问答' }],
-      }
+    if (can(user, 'profile')) {
+      items.push({ key: '/profile', icon: <UserOutlined />, label: '个人中心' })
     }
-    if (topKey === '/graph') {
-      return {
-        title: '知识图谱',
-        items: [
-          { key: '/graph', icon: <ApartmentOutlined />, label: '全景图谱' },
-        ],
-      }
-    }
-    if (topKey === '/profile') {
-      return {
-        title: '个人中心',
-        items: [{ key: '/profile', icon: <UserOutlined />, label: '账号资料' }],
-      }
-    }
-    if (topKey === '/admin') {
-      return {
-        title: '系统管理',
-        items: [
+    if (isAdmin(user)) {
+      items.push({
+        key: 'nav-admin',
+        icon: <SettingOutlined />,
+        label: '系统管理',
+        children: [
           { key: '/admin/users', icon: <UserOutlined />, label: '用户管理' },
           { key: '/admin/roles', icon: <SafetyCertificateOutlined />, label: '角色权限' },
           { key: '/admin/teams', icon: <TeamOutlined />, label: '团队管理' },
         ],
-      }
+      })
     }
-    return {
-      title: '首页大盘',
-      items: [{ key: '/dashboard', icon: <HomeOutlined />, label: '工作概览' }],
-    }
-  }, [topKey, user])
+    return items
+  }, [user])
 
   return (
     <Layout className="kh-root">
-      <Header className="kh-header" style={{ background: colorBgContainer }}>
-        <div className="kh-logo" onClick={() => navigate('/dashboard')}>
+      <Sider
+        className="kh-sider"
+        theme="dark"
+        width={220}
+        collapsedWidth={64}
+        collapsible
+        collapsed={collapsed}
+        trigger={null}
+      >
+        <div className="kh-sider-logo" onClick={() => navigate('/dashboard')}>
           <BrandLogo />
-          <span className="kh-logo-text">Knowledge Hub</span>
+          {!collapsed ? <span className="kh-logo-text">企业知识库</span> : null}
         </div>
         <Menu
-          className="kh-top-menu"
-          mode="horizontal"
-          selectedKeys={[topKey === '/admin' ? '/admin/users' : topKey]}
-          items={topItems}
+          className="kh-side-menu"
+          mode="inline"
+          selectedKeys={selectedKeys}
+          openKeys={collapsed ? [] : openKeys}
+          onOpenChange={(keys) => setOpenKeys(keys.map(String))}
+          items={menuItems}
           onClick={({ key }) => navigate(key)}
         />
-        <div className="kh-header-right">
-          {isReviewer(user) ? (
-            <Badge size="small" className="kh-bell">
-              <BellOutlined
-                style={{ fontSize: 18, cursor: 'pointer' }}
-                onClick={() => navigate('/admin/reviews')}
-              />
-            </Badge>
-          ) : null}
-          <Dropdown
-            menu={{
-              items: [
-                ...(can(user, 'profile')
-                  ? [
-                      { key: 'profile', label: '个人中心' },
-                      { type: 'divider' as const },
-                    ]
-                  : []),
-                { key: 'logout', label: '退出登录' },
-              ],
-              onClick: ({ key }) => {
-                if (key === 'profile') navigate('/profile')
-                if (key === 'logout') {
-                  authApi.logout().catch(() => undefined)
-                  clearAuth()
-                  navigate('/login')
-                }
-              },
-            }}
-          >
-            <div className="kh-user">
-              <Avatar size={28} icon={<UserOutlined />} src={user?.avatar || undefined} />
-              <span>{displayName(user)}</span>
-              {myTeams.slice(0, 2).map((team) => (
-                <Tag key={team.id} style={{ marginInlineEnd: 0 }}>
-                  {team.teamName}
-                </Tag>
-              ))}
-            </div>
-          </Dropdown>
+        <div className="kh-sider-bottom" onClick={() => setCollapsed((v) => !v)}>
+          {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+          {!collapsed ? <span>收起菜单</span> : null}
         </div>
-      </Header>
+      </Sider>
       <Layout>
-        <Sider
-          className="kh-sider"
-          theme="light"
-          width={220}
-          collapsedWidth={64}
-          collapsible
-          collapsed={collapsed}
-          trigger={null}
-        >
-          {!collapsed ? <div className="kh-sider-title">{side.title}</div> : null}
-          <Menu
-            mode="inline"
-            selectedKeys={[location.pathname]}
-            items={side.items}
-            onClick={({ key }) => navigate(key)}
-          />
-          <div className="kh-sider-bottom" onClick={() => setCollapsed((v) => !v)}>
-            {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            {!collapsed ? <span>收起菜单</span> : null}
+        <Header className="kh-header">
+          <div className="kh-header-title">{sectionTitle}</div>
+          <div className="kh-header-right">
+            {isReviewer(user) ? (
+              <Badge size="small" className="kh-bell">
+                <BellOutlined
+                  style={{ fontSize: 18, cursor: 'pointer' }}
+                  onClick={() => navigate('/admin/reviews')}
+                />
+              </Badge>
+            ) : null}
+            <Dropdown
+              menu={{
+                items: [
+                  ...(can(user, 'profile')
+                    ? [
+                        { key: 'profile', label: '个人中心' },
+                        { type: 'divider' as const },
+                      ]
+                    : []),
+                  { key: 'logout', label: '退出登录' },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'profile') navigate('/profile')
+                  if (key === 'logout') {
+                    authApi.logout().catch(() => undefined)
+                    clearAuth()
+                    navigate('/login')
+                  }
+                },
+              }}
+            >
+              <div className="kh-user">
+                <Avatar size={28} icon={<UserOutlined />} src={user?.avatar || undefined} />
+                <span>{displayName(user)}</span>
+                {myTeams.slice(0, 2).map((team) => (
+                  <Tag key={team.id} style={{ marginInlineEnd: 0 }}>
+                    {team.teamName}
+                  </Tag>
+                ))}
+              </div>
+            </Dropdown>
           </div>
-        </Sider>
+        </Header>
         <Content className="kh-content">
           <Outlet />
         </Content>

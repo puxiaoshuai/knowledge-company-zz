@@ -15,7 +15,7 @@ export default function LoginPage() {
       <Card className="kh-login-card">
         <div className="kh-login-title">
           <BrandLogo size={40} />
-          <h1>Knowledge Hub</h1>
+          <h1>企业知识库</h1>
           <p>登录后使用文档、检索、问答与图谱</p>
         </div>
         <Form

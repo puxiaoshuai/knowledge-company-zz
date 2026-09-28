@@ -126,7 +126,7 @@ export default function GraphPage() {
           <Button type="primary" loading={loading} onClick={() => void load()}>
             检索
           </Button>
-          <div style={{ flex: 1, color: '#8c8c8c', fontSize: 12 }}>
+          <div style={{ flex: 1, color: '#5f7396', fontSize: 12 }}>
             仅展示你有权限的文档及其实体
           </div>
           <Button icon={<DownloadOutlined />} onClick={() => chartRef.current?.exportPng()}>
@@ -157,7 +157,7 @@ export default function GraphPage() {
           ) : null}
           <div className="kh-graph-legend">
             <span>
-              <i style={{ background: '#1677ff' }} /> 文档
+              <i style={{ background: '#2ea8ff' }} /> 文档
             </span>
             <span>
               <i style={{ background: '#52c41a' }} /> 知识点
@@ -166,10 +166,10 @@ export default function GraphPage() {
               <i style={{ background: '#fa8c16' }} /> 人物
             </span>
             <span>
-              <i style={{ background: '#13c2c2' }} /> 组织
+              <i style={{ background: '#36cfc9' }} /> 组织
             </span>
             <span>
-              <i style={{ background: '#722ed1' }} /> 标签
+              <i style={{ background: '#9254de' }} /> 标签
             </span>
             <span>
               <span className="kh-legend-line kh-legend-blue" /> 提及
